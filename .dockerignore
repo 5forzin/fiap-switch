@@ -1,0 +1,11 @@
+.git
+.venv
+data
+runtime
+frontend/node_modules
+frontend/dist
+__pycache__
+.env
+.env.*
+*.pem
+*.key

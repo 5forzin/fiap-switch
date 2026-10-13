@@ -1,0 +1,20 @@
+[Unit]
+Description=FIAP Switch LAN controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fiap-switch
+WorkingDirectory=/opt/fiap-switch
+Environment=COLLECTOR_ENV=/etc/fiap-switch/collector.env
+ExecStart=/opt/fiap-switch/.venv/bin/python -m collector.service
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
