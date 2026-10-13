@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     env_file: ${APP_ENV_FILE:-.env}
     ports:
-      - "127.0.0.1:${WEB_PORT:-4340}:8000"
+      - "127.0.0.1:${WEB_PORT:-4341}:8000"
     volumes:
       - switch-data:/app/data
     read_only: true

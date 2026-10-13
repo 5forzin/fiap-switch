@@ -13,14 +13,15 @@ from uuid import UUID, uuid4
 from authlib.integrations.starlette_client import OAuth
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.exceptions import RequestValidationError
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.staticfiles import StaticFiles
 
 from backend.config import Settings, get_settings
 from backend.db import FLOORS, allowed, connect, initialize, inventory, user_public
-from backend.models import ActionInput, ComputerInput, JobResult, LabInput, Reports, TemporaryLogin, UserInput
-from backend.passwords import verify_password
+from backend.models import ActionInput, ComputerInput, JobResult, LabInput, Reports, PasswordChange, PasswordLogin, UserInput
+from backend.passwords import hash_password, needs_rehash, verify_password
 
 
 def digest(value):
@@ -48,15 +49,6 @@ def create_app(settings: Settings | None = None):
                                (time.time(), 'Collector lease expired. Execution outcome is unknown; verify before retrying.', job['id']))
                     audit(db, 'system', 'lease_expired', job['id'], job['computer_id'])
                 db.execute("UPDATE jobs SET state='failed',finished=?,message='Command expired before delivery.' WHERE state='queued' AND created<?", (time.time(), time.time()-300))
-                if cfg.app_mode == 'demo':
-                    db.execute('UPDATE computers SET last_seen=?', (time.time(),))
-                    db.execute('UPDATE collectors SET last_seen=?', (time.time(),))
-                    for job in db.execute("SELECT * FROM jobs WHERE state='queued' AND created<?", (time.time()-2,)).fetchall():
-                        state = 'offline' if job['action'] == 'shutdown' else 'online'
-                        metrics = {'cpu': 5, 'memory': 32, 'disk_free': 68, 'uptime_hours': 0, 'os': 'Windows 11 Enterprise'} if state == 'online' else {}
-                        db.execute('UPDATE computers SET status=?,metrics=?,issue=? WHERE id=?', (state, json.dumps(metrics), '', job['computer_id']))
-                        db.execute("UPDATE jobs SET state='completed',finished=?,message='Simulated command completed.' WHERE id=?", (time.time(), job['id']))
-                        audit(db, 'simulator', 'completed', job['action'], job['computer_id'])
 
     @asynccontextmanager
     async def lifespan(app):
@@ -73,9 +65,9 @@ def create_app(settings: Settings | None = None):
     app.state.settings = cfg
     app.add_middleware(SessionMiddleware, secret_key=cfg.session_secret, https_only=cfg.cookie_secure,
                        same_site='lax', max_age=28800, session_cookie='switch_session')
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=[urlparse(cfg.base_url).hostname, 'localhost', '127.0.0.1', 'testserver'])
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=[urlparse(cfg.base_url).hostname, 'localhost', '127.0.0.1'])
     oauth = OAuth()
-    if cfg.sso_ready:
+    if cfg.auth_mode == 'entra':
         oauth.register('entra', client_id=cfg.entra_client_id, client_secret=cfg.entra_client_secret,
                        server_metadata_url=f'https://login.microsoftonline.com/{cfg.entra_tenant_id}/v2.0/.well-known/openid-configuration',
                        client_kwargs={'scope': 'openid profile email', 'code_challenge_method': 'S256'})
@@ -93,16 +85,26 @@ def create_app(settings: Settings | None = None):
             response.headers['Cache-Control'] = 'no-store'
         return response
 
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request, error):
+        details = [{key: item[key] for key in ('loc', 'msg', 'type')} for item in error.errors()]
+        return JSONResponse({'detail': details}, status_code=422)
+
+    def account_can_sign_in(db, uid):
+        if cfg.auth_mode == 'local':
+            return bool(db.execute('SELECT 1 FROM credentials WHERE user_id=?', (uid,)).fetchone())
+        return uid.startswith(f'{cfg.entra_tenant_id}:')
+
     def current_user(request: Request):
         sid = request.session.get('sid')
         if not sid:
             raise HTTPException(401, 'Sign in to continue.')
         with connect(cfg.database_path) as db:
-            row = db.execute('SELECT u.*, s.csrf FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=? AND s.expires>? AND u.enabled=1', (digest(sid), time.time())).fetchone()
+            row = db.execute('SELECT u.*, s.csrf, EXISTS(SELECT 1 FROM credentials c WHERE c.user_id=u.id) AS password_login FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=? AND s.expires>? AND u.enabled=1', (digest(sid), time.time())).fetchone()
+            if row and not account_can_sign_in(db, row['id']):
+                row = None
         if not row:
             raise HTTPException(401, 'Session expired or access revoked.')
-        if row['id'] == 'temporary-admin' and not cfg.temporary_login_ready:
-            raise HTTPException(401, 'Temporary access has ended. Sign in through corporate SSO.')
         user = user_public(row)
         if request.method not in ('GET', 'HEAD') and not secrets.compare_digest(request.headers.get('x-csrf-token', ''), user['csrf']):
             raise HTTPException(403, 'Invalid CSRF token.')
@@ -114,23 +116,24 @@ def create_app(settings: Settings | None = None):
         return user
 
     def collector(request: Request):
-        if cfg.app_mode == 'demo':
-            raise HTTPException(404)
         supplied = request.headers.get('authorization', '')
         if not secrets.compare_digest(supplied, f'Bearer {cfg.collector_token}'):
             raise HTTPException(401, 'Invalid collector credentials.')
         return cfg.collector_id
 
-    def start_session(request, user_id):
+    def persist_session(db, request, user_id):
         sid, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-        with connect(cfg.database_path) as db:
-            previous = request.session.get('sid')
-            if previous:
-                db.execute('DELETE FROM sessions WHERE id=?', (digest(previous),))
-            db.execute('INSERT INTO sessions VALUES (?,?,?,?)', (digest(sid), user_id, time.time()+28800, csrf))
-            audit(db, user_id, 'login', user_id)
+        previous = request.session.get('sid')
+        if previous:
+            db.execute('DELETE FROM sessions WHERE id=?', (digest(previous),))
+        db.execute('INSERT INTO sessions VALUES (?,?,?,?)', (digest(sid), user_id, time.time()+28800, csrf))
+        audit(db, user_id, 'login', user_id)
         request.session.clear()
         request.session['sid'] = sid
+
+    def start_session(request, user_id):
+        with connect(cfg.database_path) as db:
+            persist_session(db, request, user_id)
 
     @app.get('/healthz')
     def health():
@@ -142,47 +145,49 @@ def create_app(settings: Settings | None = None):
             user = current_user(request)
         except HTTPException:
             user = None
-        return {'user': user, 'mode': cfg.app_mode, 'sso_ready': cfg.sso_ready, 'temporary_login_ready': cfg.temporary_login_ready, 'floors': FLOORS}
+        return {'user': user, 'auth_mode': cfg.auth_mode, 'floors': FLOORS}
 
-    @app.post('/auth/temporary')
-    def temporary_login(payload: TemporaryLogin, request: Request):
-        if not cfg.temporary_login_ready:
+    dummy_hash = hash_password(secrets.token_urlsafe(32))
+
+    @app.post('/auth/login')
+    def password_login(payload: PasswordLogin, request: Request):
+        if cfg.auth_mode != 'local':
             raise HTTPException(404)
         ip = request.client.host if request.client else 'unknown'
         with connect(cfg.database_path) as db:
             db.execute('BEGIN IMMEDIATE')
-            recent = db.execute('SELECT COUNT(*) FROM login_attempts WHERE ip=? AND created>?', (ip, time.time()-900)).fetchone()[0]
-            if recent >= 5:
+            recent_ip = db.execute('SELECT COUNT(*) FROM login_attempts WHERE ip=? AND created>?', (ip, time.time()-900)).fetchone()[0]
+            recent_user = db.execute('SELECT COUNT(*) FROM login_attempts WHERE username=? AND created>?', (payload.username, time.time()-900)).fetchone()[0]
+            if recent_ip >= 5 or recent_user >= 10:
                 raise HTTPException(429, 'Too many sign-in attempts. Try again in 15 minutes.')
-            db.execute('INSERT INTO login_attempts VALUES (?,?)', (ip, time.time()))
-        valid_password = verify_password(payload.password, cfg.temporary_password_hash)
-        if not valid_password or not secrets.compare_digest(payload.username, cfg.temporary_username):
-            raise HTTPException(401, 'Invalid username or password.')
+            db.execute('INSERT INTO login_attempts(ip,created,username) VALUES (?,?,?)', (ip, time.time(), payload.username))
+            credential = db.execute('SELECT c.*,u.enabled FROM credentials c JOIN users u ON u.id=c.user_id WHERE c.username=?', (payload.username,)).fetchone()
+        encoded = credential['password_hash'] if credential else dummy_hash
+        valid = verify_password(payload.password, encoded)
+        if not valid or not credential or not credential['enabled']:
+            raise HTTPException(401, 'Invalid email or password.')
+        upgraded = hash_password(payload.password) if needs_rehash(encoded) else None
         with connect(cfg.database_path) as db:
-            enabled = db.execute("SELECT 1 FROM users WHERE id='temporary-admin' AND enabled=1").fetchone()
-            if not enabled:
-                raise HTTPException(401, 'Invalid username or password.')
-            db.execute('DELETE FROM login_attempts WHERE ip=?', (ip,))
-        start_session(request, 'temporary-admin')
-        return {'ok': True}
-
-    @app.post('/auth/demo')
-    def demo_login(request: Request, role: str = 'admin'):
-        if cfg.app_mode != 'demo' or role not in ('admin', 'monitor', 'viewer'):
-            raise HTTPException(404)
-        start_session(request, f'demo-{role}')
+            db.execute('BEGIN IMMEDIATE')
+            latest = db.execute('SELECT c.password_hash,u.enabled FROM credentials c JOIN users u ON u.id=c.user_id WHERE c.user_id=?', (credential['user_id'],)).fetchone()
+            if not latest or not latest['enabled'] or not secrets.compare_digest(latest['password_hash'], encoded):
+                raise HTTPException(401, 'Invalid email or password.')
+            db.execute('DELETE FROM login_attempts WHERE ip=? AND username=?', (ip, payload.username))
+            if upgraded:
+                db.execute('UPDATE credentials SET password_hash=? WHERE user_id=?', (upgraded, credential['user_id']))
+            persist_session(db, request, credential['user_id'])
         return {'ok': True}
 
     @app.get('/auth/login')
     async def login(request: Request):
-        if cfg.app_mode == 'demo' or not cfg.sso_ready:
+        if cfg.auth_mode != 'entra':
             raise HTTPException(503, 'Corporate SSO is not configured.')
         request.session.clear()
         return await oauth.entra.authorize_redirect(request, f'{cfg.base_url}/auth/callback', domain_hint='fiap.com.br')
 
     @app.get('/auth/callback')
     async def callback(request: Request):
-        if cfg.app_mode != 'production' or not cfg.sso_ready:
+        if cfg.auth_mode != 'entra':
             raise HTTPException(404)
         try:
             token = await oauth.entra.authorize_access_token(request)
@@ -213,6 +218,29 @@ def create_app(settings: Settings | None = None):
         with connect(cfg.database_path) as db:
             db.execute('DELETE FROM sessions WHERE id=?', (digest(request.session['sid']),))
         request.session.clear()
+        return {'ok': True}
+
+    @app.post('/auth/password')
+    def change_password(payload: PasswordChange, request: Request, user=Depends(current_user)):
+        if cfg.auth_mode != 'local':
+            raise HTTPException(409, 'Password changes are managed by your identity provider.')
+        with connect(cfg.database_path) as db:
+            credential = db.execute('SELECT password_hash FROM credentials WHERE user_id=?', (user['id'],)).fetchone()
+        if not credential or not verify_password(payload.current_password, credential['password_hash']):
+            raise HTTPException(400, 'Current password is incorrect.')
+        if payload.new_password.isspace():
+            raise HTTPException(422, 'Enter a valid password.')
+        encoded = hash_password(payload.new_password)
+        with connect(cfg.database_path) as db:
+            db.execute('BEGIN IMMEDIATE')
+            active = db.execute('SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=? AND s.expires>? AND u.enabled=1', (digest(request.session['sid']), time.time())).fetchone()
+            latest = db.execute('SELECT password_hash FROM credentials WHERE user_id=?', (user['id'],)).fetchone()
+            if not active or not latest or not secrets.compare_digest(latest['password_hash'], credential['password_hash']):
+                raise HTTPException(401, 'Session expired or access revoked.')
+            db.execute('UPDATE credentials SET password_hash=?,changed=? WHERE user_id=?', (encoded, time.time(), user['id']))
+            db.execute('DELETE FROM sessions WHERE user_id=?', (user['id'],))
+            audit(db, user['id'], 'password_changed', user['email'])
+            persist_session(db, request, user['id'])
         return {'ok': True}
 
     @app.get('/api/dashboard')
@@ -271,26 +299,57 @@ def create_app(settings: Settings | None = None):
     @app.get('/api/users')
     def users(user=Depends(admin)):
         with connect(cfg.database_path) as db:
-            return [user_public(row) for row in db.execute('SELECT * FROM users ORDER BY name')]
+            return [user_public(row) for row in db.execute('SELECT u.*, EXISTS(SELECT 1 FROM credentials c WHERE c.user_id=u.id) AS password_login FROM users u ORDER BY name')]
 
     @app.put('/api/users')
-    def save_user(payload: UserInput, user=Depends(admin)):
-        if cfg.app_mode == 'production':
-            try:
-                uid = f'{cfg.entra_tenant_id}:{UUID(payload.oid)}'
-            except ValueError:
-                raise HTTPException(422, 'Enter the user object ID from the FIAP tenant.')
-        else:
-            uid = payload.oid
-        if uid == user['id'] and (not payload.enabled or payload.role != 'admin'):
-            raise HTTPException(409, 'You cannot remove your own administrator access.')
+    def save_user(payload: UserInput, request: Request, user=Depends(admin)):
         with connect(cfg.database_path) as db:
-            db.execute('''INSERT INTO users VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
-                email=excluded.email,name=excluded.name,role=excluded.role,enabled=excluded.enabled,grants=excluded.grants''',
-                       (uid, payload.email, payload.name, payload.role, int(payload.enabled), payload.grants.model_dump_json()))
-            db.execute('DELETE FROM sessions WHERE user_id=?', (uid,))
-            audit(db, user['id'], 'permissions_updated', uid, detail=payload.grants.model_dump_json())
-        return {'ok': True}
+            existing = db.execute('SELECT * FROM users WHERE id=?', (payload.id,)).fetchone() if payload.id else None
+            if payload.id and not existing:
+                raise HTTPException(404, 'User not found.')
+            if existing:
+                uid = existing['id']
+            elif cfg.auth_mode == 'entra':
+                try:
+                    uid = f'{cfg.entra_tenant_id}:{UUID(payload.oid or "")}'
+                except ValueError:
+                    raise HTTPException(422, 'Enter the FIAP directory object ID.')
+            else:
+                uid = str(uuid4())
+            if uid == user['id'] and (not payload.enabled or payload.role != 'admin'):
+                raise HTTPException(409, 'You cannot remove your own administrator access.')
+            if cfg.auth_mode == 'local' and not existing and not payload.password:
+                raise HTTPException(422, 'A password is required for new users.')
+            if cfg.auth_mode == 'entra' and payload.password:
+                raise HTTPException(422, 'Passwords are managed by Microsoft Entra.')
+            known_labs = {row['id'] for row in db.execute('SELECT id FROM labs')}
+            known_computers = {row['id'] for row in db.execute('SELECT id FROM computers')}
+            if set(payload.grants.labs)-known_labs or set(payload.grants.computers)-known_computers:
+                raise HTTPException(422, 'Select registered laboratories and computers.')
+        encoded = hash_password(payload.password) if payload.password else None
+        with connect(cfg.database_path) as db:
+            try:
+                db.execute('BEGIN IMMEDIATE')
+                db.execute('''INSERT INTO users VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                    email=excluded.email,name=excluded.name,role=excluded.role,enabled=excluded.enabled,grants=excluded.grants''',
+                    (uid, payload.email, payload.name, payload.role, int(payload.enabled), payload.grants.model_dump_json()))
+                if cfg.auth_mode == 'local':
+                    if encoded:
+                        db.execute('''INSERT INTO credentials VALUES (?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET
+                            username=excluded.username,password_hash=excluded.password_hash,changed=excluded.changed''',
+                            (uid, payload.email, encoded, time.time()))
+                        db.execute('DELETE FROM login_attempts WHERE username=?', (payload.email,))
+                    else:
+                        db.execute('UPDATE credentials SET username=? WHERE user_id=?', (payload.email, uid))
+                db.execute('DELETE FROM sessions WHERE user_id=?', (uid,))
+                audit(db, user['id'], 'user_updated' if existing else 'user_created', payload.email, detail=payload.grants.model_dump_json())
+                if encoded and existing:
+                    audit(db, user['id'], 'password_reset', payload.email)
+            except sqlite3.IntegrityError:
+                raise HTTPException(409, 'A user with this email already exists.')
+        if uid == user['id']:
+            start_session(request, uid)
+        return {'id': uid}
 
     @app.post('/api/labs')
     def add_lab(payload: LabInput, user=Depends(admin)):
@@ -353,8 +412,7 @@ def create_app(settings: Settings | None = None):
             for candidate in candidates:
                 actor = db.execute('SELECT * FROM users WHERE id=?', (candidate['actor_id'],)).fetchone()
                 machine = {'id': candidate['computer_id'], 'lab_id': candidate['lab_id'], 'floor': candidate['floor']}
-                temporary_access_ended = actor and actor['id'] == 'temporary-admin' and not cfg.temporary_login_ready
-                if actor and not temporary_access_ended and allowed(user_public(actor), machine, True):
+                if actor and account_can_sign_in(db, actor['id']) and allowed(user_public(actor), machine, True):
                     row = candidate
                     break
                 db.execute("UPDATE jobs SET state='failed',finished=?,message='Access was revoked before command delivery.' WHERE id=?", (time.time(), candidate['id']))
@@ -378,6 +436,8 @@ def create_app(settings: Settings | None = None):
         return {'ok': True}
 
     root = Path(cfg.frontend_path)
+    if (root / 'brand').exists():
+        app.mount('/brand', StaticFiles(directory=root / 'brand'), name='brand')
     if (root / 'assets').exists():
         app.mount('/assets', StaticFiles(directory=root / 'assets'), name='assets')
 

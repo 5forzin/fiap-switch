@@ -2,6 +2,7 @@ import json
 import sqlite3
 import time
 from contextlib import contextmanager
+from uuid import uuid4
 
 FLOORS = [1, 2, 3, 4, 5, 6, 7, 10, 11]
 
@@ -30,6 +31,11 @@ def initialize(settings):
                 id TEXT PRIMARY KEY, email TEXT NOT NULL, name TEXT NOT NULL,
                 role TEXT NOT NULL CHECK(role IN ('admin','monitor','viewer')),
                 enabled INTEGER NOT NULL DEFAULT 1, grants TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE TABLE IF NOT EXISTS credentials (
+                user_id TEXT PRIMARY KEY REFERENCES users(id),
+                username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                password_hash TEXT NOT NULL, changed REAL NOT NULL
             );
             CREATE TABLE IF NOT EXISTS labs (
                 id TEXT PRIMARY KEY, floor INTEGER NOT NULL, number INTEGER NOT NULL,
@@ -66,56 +72,48 @@ def initialize(settings):
                 action TEXT NOT NULL, target TEXT NOT NULL, computer_id TEXT,
                 created REAL NOT NULL, detail TEXT NOT NULL DEFAULT ''
             );
-            CREATE TABLE IF NOT EXISTS login_attempts (ip TEXT NOT NULL, created REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS login_attempts (ip TEXT NOT NULL, created REAL NOT NULL, username TEXT NOT NULL DEFAULT '');
             CREATE INDEX IF NOT EXISTS login_attempts_created ON login_attempts(created);
             CREATE INDEX IF NOT EXISTS jobs_queue ON jobs(state,created);
             CREATE INDEX IF NOT EXISTS audit_created ON audit(created);
         ''')
+        if 'username' not in {r['name'] for r in db.execute('PRAGMA table_info(login_attempts)')}:
+            db.execute("ALTER TABLE login_attempts ADD COLUMN username TEXT NOT NULL DEFAULT ''")
         mode = db.execute("SELECT value FROM metadata WHERE key='mode'").fetchone()
         if mode and mode['value'] != settings.app_mode:
             raise ValueError('Demo and production must use separate databases.')
         db.execute("INSERT OR IGNORE INTO metadata VALUES ('mode',?)", (settings.app_mode,))
         db.execute('INSERT OR IGNORE INTO collectors(id) VALUES (?)', (settings.collector_id,))
-        if settings.temporary_login_ready:
-            db.execute("INSERT OR IGNORE INTO users(id,email,name,role) VALUES ('temporary-admin',?,?,'admin')", (settings.temporary_email, settings.temporary_name))
-            previous = db.execute("SELECT value FROM metadata WHERE key='temporary_password_hash'").fetchone()
-            if not previous or previous['value'] != settings.temporary_password_hash:
-                db.execute("DELETE FROM sessions WHERE user_id='temporary-admin'")
-                db.execute("INSERT OR REPLACE INTO metadata VALUES ('temporary_password_hash',?)", (settings.temporary_password_hash,))
-        if settings.app_mode == 'production' and settings.bootstrap_admin_oid and settings.entra_tenant_id:
+        legacy = db.execute("SELECT * FROM users WHERE id='temporary-admin'").fetchone()
+        legacy_hash = db.execute("SELECT value FROM metadata WHERE key='temporary_password_hash'").fetchone()
+        if legacy and legacy_hash:
+            db.execute('INSERT OR IGNORE INTO credentials VALUES (?,?,?,?)',
+                       (legacy['id'], legacy['email'].lower(), legacy_hash['value'], time.time()))
+            db.execute("DELETE FROM metadata WHERE key='temporary_password_hash'")
+        if settings.auth_mode == 'local' and settings.bootstrap_admin_email and settings.bootstrap_admin_password_hash:
+            if not db.execute('SELECT 1 FROM credentials').fetchone():
+                uid = str(uuid4())
+                email = settings.bootstrap_admin_email.lower()
+                db.execute('INSERT INTO users(id,email,name,role) VALUES (?,?,?,?)',
+                           (uid, email, settings.bootstrap_admin_name, 'admin'))
+                db.execute('INSERT INTO credentials VALUES (?,?,?,?)',
+                           (uid, email, settings.bootstrap_admin_password_hash, time.time()))
+        if settings.auth_mode == 'entra' and settings.bootstrap_admin_oid and settings.entra_tenant_id:
             db.execute('INSERT OR IGNORE INTO users(id,email,name,role) VALUES (?,?,?,?)', (
                 f'{settings.entra_tenant_id}:{settings.bootstrap_admin_oid}',
                 'admin@fiap.com.br', 'Administrator', 'admin'))
-        if settings.app_mode == 'demo' and not db.execute('SELECT 1 FROM users').fetchone():
-            for uid, email, name, role, grants in [
-                ('demo-admin', 'support@fiap.com.br', 'Support team', 'admin', {}),
-                ('demo-monitor', 'monitor.demo@fiap.com.br', 'Floor monitor', 'monitor', {'floors': [3]}),
-                ('demo-viewer', 'viewer.demo@fiap.com.br', 'Floor observer', 'viewer', {'floors': [3]}),
-            ]:
-                db.execute('INSERT INTO users(id,email,name,role,grants) VALUES (?,?,?,?,?)',
-                           (uid, email, name, role, json.dumps(grants)))
-            for floor in FLOORS:
-                for number in (1, 2):
-                    octet = int(f'{floor}{number}')
-                    lab_id = f'{floor}{number:02d}'
-                    db.execute('INSERT INTO labs VALUES (?,?,?,?,?,?,?)', (
-                        lab_id, floor, number, f'Lab {lab_id}', f'10.3.{octet}.0/24',
-                        f'10.3.{octet}.255', settings.collector_id))
-                    for pc in list(range(1, 13)) + [100]:
-                        seed = floor * 19 + number * 13 + pc
-                        state = 'online' if seed % 7 < 4 else 'offline' if seed % 7 < 6 else 'unreachable'
-                        metrics = {'cpu': seed % 27 + 3, 'memory': seed % 39 + 20,
-                                   'disk_free': seed % 50 + 25, 'uptime_hours': seed % 48 + 2,
-                                   'os': 'Windows 11 Enterprise'} if state == 'online' else {}
-                        db.execute('INSERT INTO computers VALUES (?,?,?,?,?,?,?,?,?,?)', (
-                            f'{lab_id}-{pc}', lab_id, pc, f'LAB{lab_id}-PC{pc:03d}',
-                            f'10.3.{octet}.{pc}', f'02:03:{octet:02X}:00:00:{pc:02X}',
-                            state, time.time(), json.dumps(metrics),
-                            'WinRM did not respond (simulated).' if state == 'unreachable' else ''))
+
 
 
 def user_public(row):
-    return {**dict(row), 'enabled': bool(row['enabled']), 'grants': json.loads(row['grants'])}
+    user = {key: row[key] for key in ('id', 'email', 'name', 'role')}
+    user['enabled'] = bool(row['enabled'])
+    user['grants'] = json.loads(row['grants'])
+    if 'password_login' in row.keys():
+        user['auth_type'] = 'local' if row['password_login'] else 'entra'
+    if 'csrf' in row.keys():
+        user['csrf'] = row['csrf']
+    return user
 
 
 def allowed(user, computer, control=False):

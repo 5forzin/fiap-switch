@@ -1,8 +1,7 @@
-import ipaddress
 import re
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 from backend.db import FLOORS
 
@@ -21,12 +20,29 @@ class Grants(BaseModel):
 
 
 class UserInput(BaseModel):
-    oid: str = Field(min_length=1, max_length=100)
+    id: str | None = Field(default=None, max_length=100)
+    oid: str | None = Field(default=None, max_length=100)
     email: str = Field(max_length=254)
     name: str = Field(min_length=1, max_length=100)
     role: Literal['admin', 'monitor', 'viewer']
     enabled: bool = True
     grants: Grants = Field(default_factory=Grants)
+    password: str | None = Field(default=None, max_length=128, repr=False)
+
+    @field_validator('password')
+    @classmethod
+    def strong_password(cls, value):
+        if value is not None and (len(value) < 15 or value.isspace()):
+            raise ValueError('Use at least 15 characters for the password.')
+        return value
+
+    @field_validator('name')
+    @classmethod
+    def meaningful_name(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError('Enter the user name.')
+        return value
 
     @field_validator('email')
     @classmethod
@@ -117,6 +133,16 @@ class JobResult(BaseModel):
     message: str = Field(max_length=250)
 
 
-class TemporaryLogin(BaseModel):
-    username: str = Field(max_length=254)
-    password: str = Field(max_length=128)
+class PasswordLogin(BaseModel):
+    username: str = Field(min_length=1, max_length=254)
+    password: str = Field(min_length=1, max_length=128, repr=False)
+
+    @field_validator('username')
+    @classmethod
+    def normalize(cls, value):
+        return value.strip().lower()
+
+
+class PasswordChange(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128, repr=False)
+    new_password: str = Field(min_length=15, max_length=128, repr=False)

@@ -7,20 +7,39 @@ from fastapi.testclient import TestClient
 
 from backend.app import create_app, digest
 from backend.config import Settings
-from backend.db import connect
+from backend.db import FLOORS, connect
+from backend.passwords import hash_password
+
+
+PASSWORD = 'test-account-password-123'
+
+
+@pytest.fixture(scope='session')
+def encoded_password():
+    return hash_password(PASSWORD)
 
 
 @pytest.fixture
-def client(tmp_path):
-    cfg = Settings(app_mode='demo', base_url='http://testserver', cookie_secure=False,
-                   session_secret='test-session-secret-that-is-long-enough', database_path=str(tmp_path/'demo.db'))
-    with TestClient(create_app(cfg)) as c:
+def client(tmp_path, encoded_password):
+    cfg = Settings(base_url='https://testserver', session_secret='test-session-secret-that-is-long-enough',
+                   collector_token='test-collector-token-that-is-long-enough', database_path=str(tmp_path/'switch.db'))
+    with TestClient(create_app(cfg), base_url=cfg.base_url) as c:
+        with connect(cfg.database_path) as db:
+            for role in ('admin', 'monitor', 'viewer'):
+                db.execute('INSERT INTO users VALUES (?,?,?,?,?,?)', (f'test-{role}', f'{role}@fiap.com.br', role.title(), role, 1, json.dumps({'floors': [3]})))
+                db.execute('INSERT INTO credentials VALUES (?,?,?,?)', (f'test-{role}', f'{role}@fiap.com.br', encoded_password, time.time()))
+            for floor in FLOORS:
+                for number in (1, 2):
+                    lid, octet = f'{floor}{number:02d}', int(f'{floor}{number}')
+                    db.execute('INSERT INTO labs VALUES (?,?,?,?,?,?,?)', (lid, floor, number, f'Lab {lid}', f'10.3.{octet}.0/24', f'10.3.{octet}.255', 'campus'))
+                    for pc in list(range(1, 13))+[100]:
+                        db.execute('INSERT INTO computers(id,lab_id,number,ip,mac) VALUES (?,?,?,?,?)', (f'{lid}-{pc}', lid, pc, f'10.3.{octet}.{pc}', '00:11:22:33:44:55'))
         c.headers['origin'] = cfg.base_url
         yield c
 
 
-def login(client, role='admin'):
-    assert client.post(f'/auth/demo?role={role}').status_code == 200
+def login(client, role='admin', password=PASSWORD):
+    assert client.post('/auth/login', json={'username': f'{role}@fiap.com.br', 'password': password}).status_code == 200
     client.headers['x-csrf-token'] = client.get('/api/session').json()['user']['csrf']
 
 
@@ -77,15 +96,15 @@ def test_idempotency_and_conflicting_command(client):
 
 def test_domain_and_self_lockout(client):
     login(client)
-    payload = {'oid': 'demo-user', 'email': 'user@example.com', 'name': 'Test', 'role': 'monitor'}
+    payload = {'email': 'user@example.com', 'name': 'Test', 'role': 'monitor'}
     assert client.put('/api/users', json=payload).status_code == 422
-    payload.update(oid='demo-admin', email='support@fiap.com.br', role='viewer')
+    payload.update(id='test-admin', email='support@fiap.com.br', role='viewer')
     assert client.put('/api/users', json=payload).status_code == 409
 
 
 def test_machine_specific_access_and_revocation(client):
     login(client)
-    response = client.put('/api/users', json={'oid': 'demo-monitor', 'email': 'monitor.demo@fiap.com.br', 'name': 'Monitor', 'role': 'monitor', 'grants': {'computers': ['201-100']}})
+    response = client.put('/api/users', json={'id': 'test-monitor', 'email': 'monitor@fiap.com.br', 'name': 'Monitor', 'role': 'monitor', 'grants': {'computers': ['201-100']}})
     assert response.status_code == 200
     login(client, 'monitor')
     assert [c['id'] for c in client.get('/api/dashboard').json()['computers']] == ['201-100']
@@ -103,16 +122,16 @@ def test_correct_ip_mapping_and_professor(client):
     assert pcs['1103-100']['ip'] == '10.3.113.100'
 
 
-def test_mac_validation_and_demo_collector_separation(client):
+def test_mac_validation_and_collector_authentication(client):
     login(client)
     assert client.put('/api/computers/301-1', json={'mac': 'FF:FF:FF:FF:FF:FF'}).status_code == 422
     assert client.put('/api/computers/301-1', json={'mac': ''}).status_code == 200
     assert action(client, ['301-1'], 'wake').status_code == 409
-    assert client.post('/api/collector/claim').status_code == 404
+    assert client.post('/api/collector/claim').status_code == 401
 
 
 @pytest.fixture
-def production(tmp_path):
+def production(tmp_path, encoded_password):
     cfg = Settings(app_mode='production', base_url='https://testserver', cookie_secure=True,
                    collector_token='test-collector-token-that-is-long-enough',
                    session_secret='test-session-secret-that-is-long-enough', database_path=str(tmp_path/'production.db'))
@@ -120,6 +139,7 @@ def production(tmp_path):
     with TestClient(app, base_url=cfg.base_url) as client:
         with connect(cfg.database_path) as db:
             db.execute("INSERT INTO users(id,email,name,role) VALUES ('test-admin','test@fiap.com.br','Admin','admin')")
+            db.execute('INSERT INTO credentials VALUES (?,?,?,?)', ('test-admin', 'test@fiap.com.br', encoded_password, time.time()))
             db.execute("INSERT INTO labs VALUES ('301',3,1,'Lab 301','10.3.31.0/24','10.3.31.255','campus')")
             db.execute("INSERT INTO labs VALUES ('302',3,2,'Lab 302','10.3.32.0/24','10.3.32.255','another-controller')")
             db.execute("INSERT INTO computers(id,lab_id,number,ip,mac) VALUES ('301-1','301',1,'10.3.31.1','00:11:22:33:44:55')")
@@ -135,9 +155,9 @@ def production(tmp_path):
 
 def test_production_has_no_demo_login(production):
     client, cfg = production
-    assert client.post('/auth/demo').status_code == 404
+    assert client.post('/auth/demo').status_code in (404, 405)
     assert client.get('/auth/login').status_code == 503
-    assert client.get('/api/session').json()['mode'] == 'production'
+    assert client.get('/api/session').json()['auth_mode'] == 'local'
     assert client.post('/api/collector/claim').status_code == 401
 
 
@@ -165,8 +185,10 @@ def test_real_collector_protocol_lease_and_tenant_scope(production):
     assert client.get('/api/dashboard').json()['computers'][0]['status'] == 'unknown'
 
 
-def test_demo_database_cannot_be_reused_in_production(client):
-    cfg = client.app.state.settings.model_copy(update={'app_mode': 'production', 'base_url': 'https://testserver', 'cookie_secure': True, 'collector_token': 'another-test-collector-token-long-enough'})
+def test_legacy_demo_database_cannot_be_reused_in_production(client):
+    cfg = client.app.state.settings
+    with connect(cfg.database_path) as db:
+        db.execute("UPDATE metadata SET value='demo' WHERE key='mode'")
     with pytest.raises(ValueError, match='separate databases'):
         with TestClient(create_app(cfg)):
             pass

@@ -2,26 +2,30 @@
 
 The website runs on Contabo. A single controller inside the FIAP LAN polls the website over HTTPS, runs fixed WinRM commands, and sends health reports. No software is installed on laboratory computers. No inbound connection from the internet to the FIAP LAN is required.
 
-## Corporate SSO
+## Accounts
 
-Microsoft's public discovery endpoint for `fiap.com.br` resolves to tenant `11dbbfe2-89b8-4549-be10-cec364e59551`. Confirm this with FIAP IT before production use.
+Set `AUTH_MODE=local` (the default). After filling the private `.env`, create the first administrator interactively:
 
-Register a **single-tenant web application** in Microsoft Entra ID:
+```sh
+docker compose exec web python -m scripts.create_admin --email admin@fiap.com.br --name Administrator
+```
+
+Passwords belong to this application, independently of the FIAP domain password. The administrator creates accounts in **User access**, assigns a role and floors/laboratories/computers, and can reset passwords or disable accounts. Email addresses must use `@fiap.com.br`. There is no public signup or preset password. Users change their own passwords with the key button in the header.
+
+New passwords require 15–128 characters. Salted scrypt hashes use N=65536, r=8, p=2. Login attempts are limited to five per IP and ten per account in 15 minutes; successful authentication clears that IP/account's attempts. Session cookies are signed, HttpOnly, Secure, and SameSite=Lax, with an eight-hour lifetime. Writes require a same-origin request and a session CSRF token. Password changes, administrative resets, grant changes, and account disablement revoke existing sessions. Queued commands recheck current permissions before delivery.
+
+The deployment migrates the prior administrator password hash into the account credential table and upgrades its hash on successful login. It preserves the account ID, grants, and audit history. Existing databases marked as demonstration data cannot run in production.
+
+## Optional corporate SSO
+
+Set `AUTH_MODE=entra` only after FIAP IT registers a single-tenant Microsoft Entra web application. The FIAP discovery endpoint resolves to tenant `11dbbfe2-89b8-4549-be10-cec364e59551`.
 
 1. Register the exact HTTPS redirect URI: `https://<your-host>/auth/callback`.
-2. Set `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, and `ENTRA_CLIENT_SECRET` in the server's private `.env`.
-3. Set `BOOTSTRAP_ADMIN_OID` to the FIAP directory object ID of the initial administrator, then restart the website.
-4. Add users by their Entra object ID and corporate email. Assign their floors, laboratories, or individual computers in **User access**.
+2. Set `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, and `ENTRA_CLIENT_SECRET` in the private environment.
+3. Set `BOOTSTRAP_ADMIN_OID` to the initial administrator's directory object ID, then restart the website.
+4. Add users by their FIAP directory object ID and corporate email in **User access**.
 
-The application validates OIDC signatures, issuer, audience, state, nonce and PKCE through Authlib. Tenant ID and stable object ID select the authorized principal. `@fiap.com.br` is an additional sign-in restriction; an email suffix alone never grants access. Tokens and domain passwords are not sent to the frontend. Revoking access or changing grants invalidates existing sessions.
-
-An email address alone cannot register an application or supply its client credentials. Corporate sign-in stays disabled until registration is complete. The demonstration uses a separate database and cannot connect to real controllers.
-
-### Temporary access
-
-When authorized, an initial local administrator can use a username and an independent password until FIAP IT completes registration. Set `TEMPORARY_LOGIN_ENABLED=true`, `TEMPORARY_USERNAME`, `TEMPORARY_PASSWORD_HASH`, `TEMPORARY_NAME`, and `TEMPORARY_EMAIL` in the private server environment. Generate the hash with `backend.passwords.hash_password`; quote its value in the environment file. Never use a domain password for this local account.
-
-The password uses scrypt with a random salt. Sign-in requires same-origin HTTPS requests and is limited to five failed attempts per IP per 15 minutes. Cookies are signed, HttpOnly and Secure. Password rotation invalidates temporary sessions on the next server startup. Once all three Entra settings are configured, both temporary sign-in and existing temporary sessions are rejected automatically. Domain users continue to be identified by Entra object IDs; temporary access does not replace their SSO identities.
+Authlib validates the OIDC signatures, issuer, audience, state, nonce, and PKCE. The tenant ID and object ID identify the authorized principal; the email suffix alone does not grant access. In Entra mode, local passwords and local sessions are rejected. Account grants remain administrator-managed.
 
 ## LAN controller
 
@@ -61,7 +65,6 @@ The lab wizard creates PCs 1 through the entered student count, plus the optiona
 - **Online:** WinRM returned a valid health report.
 - **Unreachable:** WinRM could not verify the computer. This does not prove the computer is powered off.
 - **Unknown:** no report, or the last report is older than 120 seconds.
-- **Offline:** a confirmed simulated power state, currently available only in the demo. Production cannot infer physical power state from network silence.
 
 Every command is authorized server-side against the current user grants. Mixed unauthorized batches are rejected in full. Commands use an idempotency key, expire after five minutes before delivery, and have a two-minute execution lease. An expired lease is marked failed with unknown outcome and is never automatically retried.
 
@@ -69,7 +72,7 @@ Shut down and restart schedule a 60-second Windows notice. Windows scheduled shu
 
 ## Hosting and backup
 
-Copy `.env.example` to `.env`, fill in private configuration, then run `docker compose up -d --build`. Bind the container to loopback and place it behind Caddy or another HTTPS proxy. The container runs as a non-root user with a read-only filesystem and a dedicated SQLite data volume. Use one web replica; SQLite queues are transactional and persistent.
+Copy `.env.example` to `.env`, fill in private configuration, then run `docker compose up -d --build` and create the first administrator. Bind the container to loopback and place it behind Caddy or another HTTPS proxy. The container runs as a non-root user with a read-only filesystem and a dedicated SQLite data volume. Use one web replica; SQLite queues are transactional and persistent.
 
 Back up SQLite with its online backup API, not by copying a live WAL database. Retain the deployment's `.env` in a secure backup. Rotate the controller token on both ends together. Restrict host administration and review command/audit retention with FIAP IT.
 
@@ -90,7 +93,7 @@ Provisioning uses one Linux t3.micro controller and one Windows Server 2022 t3.s
 
 The account may restrict instance types to its Free Tier eligible set. `t3.small` was accepted for the Windows target during validation. If provisioning fails partway through, inspect the recorded resource state and destroy it before creating another lab. `stop` leaves chargeable EBS volumes; `destroy` removes all owned resources and volumes.
 
-The remote E2E harness requires ignored temporary website credentials, the lab state, and authorized SSH access to Contabo. It starts the controller, checks live WinRM telemetry over the deployed HTTPS API, issues restart and shutdown through the queue, and verifies a changed Windows boot time and the EC2 stopped state. Its laboratory is labeled **AWS validation**, with synthetic unused PCs alongside the actual EC2 target. Remove this inventory fixture after validation and destroy the test resources.
+The remote E2E harness requires ignored website credentials in `runtime/login.json`, the lab state, and authorized SSH access to Contabo. It starts the controller, checks live WinRM telemetry over the deployed HTTPS API, issues restart and shutdown through the queue, and verifies a changed Windows boot time and the EC2 stopped state. Its laboratory is labeled **AWS validation**, with synthetic unused PCs alongside the actual EC2 target. Remove this inventory fixture after validation and destroy the test resources.
 
 ## References
 
@@ -99,3 +102,6 @@ The remote E2E harness requires ignored temporary website credentials, the lab s
 - [WinRM security](https://learn.microsoft.com/en-us/powershell/scripting/learn/remoting/winrmsecurity)
 - [pywinrm](https://github.com/diyan/pywinrm)
 - [AWS CLI console sign-in](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html)
+
+- [OWASP password storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)
+- [NIST authentication requirements](https://pages.nist.gov/800-63-4/sp800-63b.html)

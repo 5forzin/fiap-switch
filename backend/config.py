@@ -4,50 +4,51 @@ from typing import Literal
 from urllib.parse import urlparse
 from uuid import UUID
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', extra='ignore')
-    app_mode: Literal['demo', 'production'] = 'production'
+    app_mode: Literal['production'] = 'production'
+    environment: Literal['production', 'development'] = 'production'
+    auth_mode: Literal['local', 'entra'] = 'local'
     base_url: str = 'http://localhost:8000'
     database_path: str = 'data/switch.db'
-    session_secret: str = ''
+    session_secret: str = Field(default='', repr=False)
     cookie_secure: bool = True
     entra_tenant_id: str = ''
     entra_client_id: str = ''
-    entra_client_secret: str = ''
+    entra_client_secret: str = Field(default='', repr=False)
     bootstrap_admin_oid: str = ''
     collector_id: str = 'campus'
-    collector_token: str = ''
+    collector_token: str = Field(default='', repr=False)
     frontend_path: str = 'frontend/dist'
     stale_seconds: int = 120
-    temporary_login_enabled: bool = False
-    temporary_username: str = 'admin'
-    temporary_password_hash: str = ''
-    temporary_name: str = 'Temporary administrator'
-    temporary_email: str = 'admin@fiap.com.br'
-
-    @property
-    def temporary_login_ready(self):
-        return self.app_mode == 'production' and self.temporary_login_enabled and not self.sso_ready and bool(self.temporary_password_hash)
+    bootstrap_admin_email: str = ''
+    bootstrap_admin_password_hash: str = Field(default='', repr=False)
+    bootstrap_admin_name: str = 'Administrator'
 
     @property
     def sso_ready(self):
         return all((self.entra_tenant_id, self.entra_client_id, self.entra_client_secret))
 
     def validate_runtime(self):
-        if len(self.session_secret) < 32:
+        if len(self.session_secret) < 32 or self.session_secret.startswith('replace-'):
             raise ValueError('SESSION_SECRET must contain at least 32 characters.')
-        if self.app_mode == 'production':
+        if self.environment == 'production':
             if not self.cookie_secure or urlparse(self.base_url).scheme != 'https':
                 raise ValueError('Production requires HTTPS and secure cookies.')
-            if len(self.collector_token) < 32:
+            if len(self.collector_token) < 32 or self.collector_token.startswith('replace-'):
                 raise ValueError('COLLECTOR_TOKEN must contain at least 32 characters.')
         if self.entra_tenant_id:
             UUID(self.entra_tenant_id)
         if self.bootstrap_admin_oid:
             UUID(self.bootstrap_admin_oid)
+        if self.auth_mode == 'entra' and not self.sso_ready:
+            raise ValueError('Entra authentication requires the tenant, client ID, and client secret.')
+        if self.bootstrap_admin_email and not self.bootstrap_admin_email.lower().endswith('@fiap.com.br'):
+            raise ValueError('BOOTSTRAP_ADMIN_EMAIL must use the FIAP domain.')
         Path(self.database_path).parent.mkdir(parents=True, exist_ok=True)
 
 

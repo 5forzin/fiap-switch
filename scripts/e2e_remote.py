@@ -31,7 +31,7 @@ def await_command(ssm, command_id, instance, timeout=300):
 
 def main():
     state = json.loads(STATE.read_text())
-    credentials = json.loads(Path('runtime/temporary-login.json').read_text())
+    credentials = json.loads(Path('runtime/login.json').read_text())
     ec2, _, ssm = clients()
     with httpx.Client(base_url=URL, headers={'Origin': URL}, timeout=30) as api:
         def request(method, path, **kwargs):
@@ -39,11 +39,11 @@ def main():
             response.raise_for_status()
             return response.json()
 
-        request('POST', '/auth/temporary', json=credentials)
+        request('POST', '/auth/login', json=credentials)
         session = request('GET', '/api/session')
         api.headers['X-CSRF-Token'] = session['user']['csrf']
-        assert session['user']['id'] == 'temporary-admin'
-        print('HTTPS temporary authentication: passed.', flush=True)
+        assert session['user']['role'] == 'admin' and session['user']['auth_type'] == 'local'
+        print('HTTPS password authentication: passed.', flush=True)
         dashboard = request('GET', '/api/dashboard')
         if not any(lab['id'] == '301' for lab in dashboard['labs']):
             request('POST', '/api/labs', json={'floor': 3, 'number': 1, 'label': 'AWS validation · Lab 301', 'students': 11, 'include_professor': False})
