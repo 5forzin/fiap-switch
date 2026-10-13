@@ -30,9 +30,15 @@ def test_temporary_login_is_hashed_rate_limited_and_disabled_by_sso(tmp_path):
         assert 'secure' in result.headers['set-cookie'].lower()
         assert client.get('/api/session').json()['user']['id'] == 'temporary-admin'
         assert client.get('/api/dashboard').status_code == 200
+        client.headers['x-csrf-token'] = client.get('/api/session').json()['user']['csrf']
+        assert client.post('/api/labs', json={'floor': 3, 'number': 1, 'label': 'Lab 301', 'students': 1}).status_code == 200
+        from uuid import uuid4
+        assert client.post('/api/actions', json={'action': 'shutdown', 'computer_ids': ['301-1']}, headers={'idempotency-key': str(uuid4())}).status_code == 200
         # Activation of corporate SSO also rejects existing temporary sessions.
         cfg.entra_tenant_id = '11111111-1111-1111-1111-111111111111'
         cfg.entra_client_id = 'test-client'
         cfg.entra_client_secret = 'test-secret'
         assert client.post('/auth/temporary', json={'username': 'admin', 'password': password}).status_code == 404
         assert client.get('/api/dashboard').status_code == 401
+        claim = client.post('/api/collector/claim', headers={'authorization': f'Bearer {cfg.collector_token}'})
+        assert claim.json()['job'] is None

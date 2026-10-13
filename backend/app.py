@@ -353,7 +353,8 @@ def create_app(settings: Settings | None = None):
             for candidate in candidates:
                 actor = db.execute('SELECT * FROM users WHERE id=?', (candidate['actor_id'],)).fetchone()
                 machine = {'id': candidate['computer_id'], 'lab_id': candidate['lab_id'], 'floor': candidate['floor']}
-                if actor and allowed(user_public(actor), machine, True):
+                temporary_access_ended = actor and actor['id'] == 'temporary-admin' and not cfg.temporary_login_ready
+                if actor and not temporary_access_ended and allowed(user_public(actor), machine, True):
                     row = candidate
                     break
                 db.execute("UPDATE jobs SET state='failed',finished=?,message='Access was revoked before command delivery.' WHERE id=?", (time.time(), candidate['id']))
