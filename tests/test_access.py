@@ -157,6 +157,8 @@ def test_real_collector_protocol_lease_and_tenant_scope(production):
     assert client.post('/api/collector/reports', json={'reports': [{'computer_id': '302-1', 'status': 'online'}]}, headers=headers).status_code == 403
     assert client.post('/api/collector/reports', json={'reports': [{'computer_id': '301-1', 'status': 'offline'}]}, headers=headers).status_code == 422
     assert client.post('/api/collector/reports', json={'reports': [{'computer_id': '301-1', 'status': 'online', 'metrics': {'cpu': 12}}]}, headers=headers).status_code == 200
+    client.post('/api/collector/reports', json={'reports': [{'computer_id': '301-1', 'status': 'online', 'mac': '02:11:22:33:44:55'}]}, headers=headers)
+    assert client.get('/api/dashboard').json()['computers'][0]['mac'] == '00:11:22:33:44:55'
     assert client.get('/api/dashboard').json()['computers'][0]['status'] == 'online'
     with connect(cfg.database_path) as db:
         db.execute('UPDATE computers SET last_seen=?', (time.time()-300,))
@@ -168,3 +170,14 @@ def test_demo_database_cannot_be_reused_in_production(client):
     with pytest.raises(ValueError, match='separate databases'):
         with TestClient(create_app(cfg)):
             pass
+
+
+def test_queued_command_is_rejected_after_access_revocation(production):
+    client, cfg = production
+    assert action(client, ['301-1']).status_code == 200
+    with connect(cfg.database_path) as db:
+        db.execute("UPDATE users SET enabled=0 WHERE id='test-admin'")
+    response = client.post('/api/collector/claim', headers={'authorization': f'Bearer {cfg.collector_token}'})
+    assert response.json()['job'] is None
+    with connect(cfg.database_path) as db:
+        assert db.execute('SELECT state FROM jobs').fetchone()['state'] == 'failed'

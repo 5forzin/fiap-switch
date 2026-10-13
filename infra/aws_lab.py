@@ -64,7 +64,7 @@ def provision():
     windows_ami = ssm.get_parameter(Name='/aws/service/ami-windows-latest/Windows_Server-2022-English-Full-Base')['Parameter']['Value']
     linux_ami = ssm.get_parameter(Name='/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64')['Parameter']['Value']
     windows_script = '<powershell>' + (Path(__file__).parent/'windows-bootstrap.ps1').read_text().replace('__PASSWORD__', password).replace('10.3.31.1', '10.3.31.11') + '</powershell>'
-    linux_script = '#!/bin/bash\nset -eu\ndnf install -y python3 python3-pip\nmkdir -p /opt/fiap-switch\n'
+    linux_script = '#!/bin/bash\nset -eu\ndnf install -y python3.12 python3.12-pip\nmkdir -p /opt/fiap-switch\n'
     # IAM propagation is eventually consistent. Retry only the pre-instance validation.
     for kind, ami, instance_type, ip, script in [
         ('controller', linux_ami, 't3.micro', '10.3.31.10', linux_script),

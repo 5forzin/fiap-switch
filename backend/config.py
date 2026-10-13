@@ -22,6 +22,15 @@ class Settings(BaseSettings):
     collector_token: str = ''
     frontend_path: str = 'frontend/dist'
     stale_seconds: int = 120
+    temporary_login_enabled: bool = False
+    temporary_username: str = 'admin'
+    temporary_password_hash: str = ''
+    temporary_name: str = 'Temporary administrator'
+    temporary_email: str = 'admin@fiap.com.br'
+
+    @property
+    def temporary_login_ready(self):
+        return self.app_mode == 'production' and self.temporary_login_enabled and not self.sso_ready and bool(self.temporary_password_hash)
 
     @property
     def sso_ready(self):

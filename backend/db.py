@@ -66,6 +66,8 @@ def initialize(settings):
                 action TEXT NOT NULL, target TEXT NOT NULL, computer_id TEXT,
                 created REAL NOT NULL, detail TEXT NOT NULL DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS login_attempts (ip TEXT NOT NULL, created REAL NOT NULL);
+            CREATE INDEX IF NOT EXISTS login_attempts_created ON login_attempts(created);
             CREATE INDEX IF NOT EXISTS jobs_queue ON jobs(state,created);
             CREATE INDEX IF NOT EXISTS audit_created ON audit(created);
         ''')
@@ -74,6 +76,12 @@ def initialize(settings):
             raise ValueError('Demo and production must use separate databases.')
         db.execute("INSERT OR IGNORE INTO metadata VALUES ('mode',?)", (settings.app_mode,))
         db.execute('INSERT OR IGNORE INTO collectors(id) VALUES (?)', (settings.collector_id,))
+        if settings.temporary_login_ready:
+            db.execute("INSERT OR IGNORE INTO users(id,email,name,role) VALUES ('temporary-admin',?,?,'admin')", (settings.temporary_email, settings.temporary_name))
+            previous = db.execute("SELECT value FROM metadata WHERE key='temporary_password_hash'").fetchone()
+            if not previous or previous['value'] != settings.temporary_password_hash:
+                db.execute("DELETE FROM sessions WHERE user_id='temporary-admin'")
+                db.execute("INSERT OR REPLACE INTO metadata VALUES ('temporary_password_hash',?)", (settings.temporary_password_hash,))
         if settings.app_mode == 'production' and settings.bootstrap_admin_oid and settings.entra_tenant_id:
             db.execute('INSERT OR IGNORE INTO users(id,email,name,role) VALUES (?,?,?,?)', (
                 f'{settings.entra_tenant_id}:{settings.bootstrap_admin_oid}',

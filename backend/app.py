@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import secrets
 import sqlite3
 import time
@@ -9,7 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
-from authlib.integrations.starlette_client import OAuth, OAuthError
+from authlib.integrations.starlette_client import OAuth
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
@@ -18,7 +19,8 @@ from starlette.staticfiles import StaticFiles
 
 from backend.config import Settings, get_settings
 from backend.db import FLOORS, allowed, connect, initialize, inventory, user_public
-from backend.models import ActionInput, ComputerInput, JobResult, LabInput, Reports, UserInput
+from backend.models import ActionInput, ComputerInput, JobResult, LabInput, Reports, TemporaryLogin, UserInput
+from backend.passwords import verify_password
 
 
 def digest(value):
@@ -39,6 +41,7 @@ def create_app(settings: Settings | None = None):
             await asyncio.sleep(2)
             with connect(cfg.database_path) as db:
                 db.execute('DELETE FROM sessions WHERE expires < ?', (time.time(),))
+                db.execute('DELETE FROM login_attempts WHERE created < ?', (time.time()-900,))
                 expired = db.execute("SELECT * FROM jobs WHERE state='running' AND lease_until<?", (time.time(),)).fetchall()
                 for job in expired:
                     db.execute("UPDATE jobs SET state='failed',finished=?,message=? WHERE id=?",
@@ -98,6 +101,8 @@ def create_app(settings: Settings | None = None):
             row = db.execute('SELECT u.*, s.csrf FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=? AND s.expires>? AND u.enabled=1', (digest(sid), time.time())).fetchone()
         if not row:
             raise HTTPException(401, 'Session expired or access revoked.')
+        if row['id'] == 'temporary-admin' and not cfg.temporary_login_ready:
+            raise HTTPException(401, 'Temporary access has ended. Sign in through corporate SSO.')
         user = user_public(row)
         if request.method not in ('GET', 'HEAD') and not secrets.compare_digest(request.headers.get('x-csrf-token', ''), user['csrf']):
             raise HTTPException(403, 'Invalid CSRF token.')
@@ -137,7 +142,29 @@ def create_app(settings: Settings | None = None):
             user = current_user(request)
         except HTTPException:
             user = None
-        return {'user': user, 'mode': cfg.app_mode, 'sso_ready': cfg.sso_ready, 'floors': FLOORS}
+        return {'user': user, 'mode': cfg.app_mode, 'sso_ready': cfg.sso_ready, 'temporary_login_ready': cfg.temporary_login_ready, 'floors': FLOORS}
+
+    @app.post('/auth/temporary')
+    def temporary_login(payload: TemporaryLogin, request: Request):
+        if not cfg.temporary_login_ready:
+            raise HTTPException(404)
+        ip = request.client.host if request.client else 'unknown'
+        with connect(cfg.database_path) as db:
+            db.execute('BEGIN IMMEDIATE')
+            recent = db.execute('SELECT COUNT(*) FROM login_attempts WHERE ip=? AND created>?', (ip, time.time()-900)).fetchone()[0]
+            if recent >= 5:
+                raise HTTPException(429, 'Too many sign-in attempts. Try again in 15 minutes.')
+            db.execute('INSERT INTO login_attempts VALUES (?,?)', (ip, time.time()))
+        valid_password = verify_password(payload.password, cfg.temporary_password_hash)
+        if not valid_password or not secrets.compare_digest(payload.username, cfg.temporary_username):
+            raise HTTPException(401, 'Invalid username or password.')
+        with connect(cfg.database_path) as db:
+            enabled = db.execute("SELECT 1 FROM users WHERE id='temporary-admin' AND enabled=1").fetchone()
+            if not enabled:
+                raise HTTPException(401, 'Invalid username or password.')
+            db.execute('DELETE FROM login_attempts WHERE ip=?', (ip,))
+        start_session(request, 'temporary-admin')
+        return {'ok': True}
 
     @app.post('/auth/demo')
     def demo_login(request: Request, role: str = 'admin'):
@@ -176,7 +203,8 @@ def create_app(settings: Settings | None = None):
             return RedirectResponse('/')
         except HTTPException:
             raise
-        except (OAuthError, ValueError, KeyError):
+        except Exception as error:
+            logging.getLogger('auth').warning('Corporate authentication failed (%s).', type(error).__name__)
             request.session.clear()
             raise HTTPException(401, 'Corporate authentication failed.')
 
@@ -308,7 +336,7 @@ def create_app(settings: Settings | None = None):
             if any(r.computer_id not in valid for r in payload.reports):
                 raise HTTPException(403, 'Computer is not assigned to this collector.')
             for r in payload.reports:
-                db.execute('UPDATE computers SET status=?,metrics=?,last_seen=?,issue=?,mac=CASE WHEN ? != \'\' THEN ? ELSE mac END WHERE id=?',
+                db.execute('UPDATE computers SET status=?,metrics=?,last_seen=?,issue=?,mac=CASE WHEN mac=\'\' AND ? != \'\' THEN ? ELSE mac END WHERE id=?',
                            (r.status, json.dumps(r.metrics), time.time(), r.issue, r.mac, r.mac, r.computer_id))
             db.execute('UPDATE collectors SET last_seen=? WHERE id=?', (time.time(), cid))
         return {'ok': True}
@@ -318,10 +346,19 @@ def create_app(settings: Settings | None = None):
         with connect(cfg.database_path) as db:
             db.execute('BEGIN IMMEDIATE')
             db.execute('UPDATE collectors SET last_seen=? WHERE id=?', (time.time(), cid))
-            row = db.execute('''SELECT j.*,c.ip,c.hostname,c.mac,l.broadcast FROM jobs j
+            candidates = db.execute('''SELECT j.*,c.ip,c.hostname,c.mac,c.lab_id,l.broadcast,l.floor FROM jobs j
                 JOIN computers c ON c.id=j.computer_id JOIN labs l ON l.id=c.lab_id
-                WHERE j.state='queued' AND l.collector_id=? AND j.created>? ORDER BY j.created LIMIT 1''', (cid, time.time()-300)).fetchone()
-            if not row:
+                WHERE j.state='queued' AND l.collector_id=? AND j.created>? ORDER BY j.created''', (cid, time.time()-300)).fetchall()
+            row = None
+            for candidate in candidates:
+                actor = db.execute('SELECT * FROM users WHERE id=?', (candidate['actor_id'],)).fetchone()
+                machine = {'id': candidate['computer_id'], 'lab_id': candidate['lab_id'], 'floor': candidate['floor']}
+                if actor and allowed(user_public(actor), machine, True):
+                    row = candidate
+                    break
+                db.execute("UPDATE jobs SET state='failed',finished=?,message='Access was revoked before command delivery.' WHERE id=?", (time.time(), candidate['id']))
+                audit(db, cid, 'command_revoked', candidate['action'], candidate['computer_id'])
+            if row is None:
                 return {'job': None}
             lease = secrets.token_urlsafe(32)
             db.execute("UPDATE jobs SET state='running',lease_until=?,lease_token=? WHERE id=?", (time.time()+120, digest(lease), row['id']))

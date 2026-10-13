@@ -115,3 +115,8 @@ class JobResult(BaseModel):
     lease_token: str
     state: Literal['completed', 'failed']
     message: str = Field(max_length=250)
+
+
+class TemporaryLogin(BaseModel):
+    username: str = Field(max_length=254)
+    password: str = Field(max_length=128)
