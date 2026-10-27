@@ -200,7 +200,9 @@ function App() {
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    const result = await response.json();
+    const result = await response.json().catch(() => {
+      throw new Error("Server unavailable. Try again.");
+    });
     if (!response.ok) {
       if (response.status === 401 && activeUser.current === user?.id) {
         setSession((s) => s && { ...s, user: null });

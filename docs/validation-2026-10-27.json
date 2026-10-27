@@ -1,0 +1,318 @@
+{
+  "date": "2026-10-27",
+  "environment": "Published HTTPS application, Windows Server 2022 controller and two native WinRM HTTPS targets in an isolated AWS VPC.",
+  "results": {
+    "inventory_all_floors_addressing_and_unknown_state": {
+      "passed": true,
+      "verified_at": 1793141774.8050234,
+      "evidence": {
+        "floors": 9,
+        "computers": 12
+      }
+    },
+    "duplicate_laboratory_invalid_floor_mac_and_missing_wake_mac_rejected": {
+      "passed": true,
+      "verified_at": 1793141775.7247677,
+      "evidence": true
+    },
+    "corporate_email_self_lockout_action_validation_and_inactive_sso": {
+      "passed": true,
+      "verified_at": 1793141778.8187401,
+      "evidence": true
+    },
+    "anonymous_cross_origin_and_unauthenticated_collector_rejected": {
+      "passed": true,
+      "verified_at": 1793141780.7313852,
+      "evidence": true
+    },
+    "browser_lab_creation_and_professor_ip": {
+      "passed": true,
+      "verified_at": 1793141808.9398835,
+      "evidence": {
+        "lab": "202",
+        "ip": "10.3.22.100"
+      }
+    },
+    "floor_scope_read_only_role_atomic_batch_admin_and_csrf_permissions": {
+      "passed": true,
+      "verified_at": 1793141819.1309974,
+      "evidence": true
+    },
+    "laboratory_computer_grants_and_immediate_session_revocation": {
+      "passed": true,
+      "verified_at": 1793141824.6820364,
+      "evidence": true
+    },
+    "password_change_admin_reset_disable_reenable_and_logout": {
+      "passed": true,
+      "verified_at": 1793141831.1716175,
+      "evidence": true
+    },
+    "persistent_login_attempt_limit_and_administrative_recovery": {
+      "passed": true,
+      "verified_at": 1793141839.8777428,
+      "evidence": true
+    },
+    "browser_inventory_pagination_next_previous_and_ip_search": {
+      "passed": true,
+      "verified_at": 1793141864.9689507,
+      "evidence": {
+        "first_page": 50,
+        "second_page": 5,
+        "search": "10.3.32.55",
+        "results": 1
+      }
+    },
+    "windows_controller_scheduled_task_with_verified_winrm_certificates": {
+      "passed": true,
+      "verified_at": 1793141909.0029695,
+      "evidence": true
+    },
+    "live_winrm_cpu_memory_disk_uptime_os_and_mac_autodiscovery": {
+      "passed": true,
+      "verified_at": 1793143629.7350888,
+      "evidence": {
+        "301-4": {
+          "cpu": 1,
+          "memory": 46.1,
+          "disk_free": 34.3,
+          "uptime_hours": 0,
+          "os": "Microsoft Windows Server 2022 Datacenter"
+        },
+        "202-100": {
+          "cpu": 15,
+          "memory": 47.5,
+          "disk_free": 34.3,
+          "uptime_hours": 0,
+          "os": "Microsoft Windows Server 2022 Datacenter"
+        }
+      }
+    },
+    "live_idempotency_conflicting_commands_collector_scope_and_lease_token": {
+      "passed": true,
+      "verified_at": 1793142004.4699142,
+      "evidence": true
+    },
+    "queue_and_authenticated_session_survive_real_web_container_restart": {
+      "passed": true,
+      "verified_at": 1793142012.7098522,
+      "evidence": true
+    },
+    "actual_collector_outage_stale_health_and_interrupted_lease_timeout": {
+      "passed": true,
+      "verified_at": 1793142227.718429,
+      "evidence": {
+        "elapsed_seconds": 223,
+        "lease_state": "failed"
+      }
+    },
+    "actual_five_minute_undelivered_command_expiry": {
+      "passed": true,
+      "verified_at": 1793142376.9607751,
+      "evidence": {
+        "elapsed_seconds": 372
+      }
+    },
+    "actual_queued_permission_revocation_rechecked_before_execution": {
+      "passed": true,
+      "verified_at": 1793142381.762141,
+      "evidence": true
+    },
+    "real_winrm_service_failure_command_failure_and_no_false_power_state": {
+      "passed": true,
+      "verified_at": 1793142755.4022791,
+      "evidence": {
+        "job": "bf94f8c5-dd76-4c3b-8781-32ebc658bdc0",
+        "boot_unchanged": true
+      }
+    },
+    "large_inventory_browser_scope_defaults": {
+      "passed": true,
+      "verified_at": 1793142927.2686574,
+      "evidence": {
+        "fixture_computers": 1188,
+        "floors": 9,
+        "overview_computer_tables": 0,
+        "default_lab_computers": 66,
+        "rendered_page_rows": 50,
+        "floor_switch_selects_first_lab": true
+      }
+    },
+    "browser_configured_hardware_standard_detects_real_windows_capacity_mismatch": {
+      "passed": true,
+      "verified_at": 1793143221.5847008,
+      "evidence": {
+        "expected_memory_gib": 4,
+        "actual_memory_gib": 1.96,
+        "detected": 1793143220.5552258,
+        "differences": [
+          "memory_gib: expected 4.0, detected 1.96"
+        ]
+      }
+    },
+    "browser_general_scan_saves_fresh_immutable_energy_and_hardware_results": {
+      "passed": true,
+      "verified_at": 1793143246.5487306,
+      "evidence": {
+        "check": "75add19d-b4af-4b2d-8846-aff7ac609b21",
+        "summary": {
+          "total": 2,
+          "online": 2,
+          "unreachable": 0,
+          "unknown": 0,
+          "hardware_mismatches": 1
+        },
+        "checked_at": [
+          1793143231.9167447,
+          1793143231.9173517
+        ]
+      }
+    },
+    "automatic_daily_history_records_real_winrm_observations": {
+      "passed": true,
+      "verified_at": 1793143246.9580603,
+      "evidence": {
+        "day": "2026-10-27",
+        "summary": {
+          "total": 2,
+          "online": 2,
+          "unreachable": 0,
+          "unknown": 0,
+          "hardware_mismatches": 1
+        }
+      }
+    },
+    "live_history_scan_and_hardware_permissions_are_floor_scoped": {
+      "passed": true,
+      "verified_at": 1793143249.630885,
+      "evidence": true
+    },
+    "hardware_resolution_preserves_incident_date_and_previous_verification": {
+      "passed": true,
+      "verified_at": 1793143359.53091,
+      "evidence": {
+        "detected": 1793143220.5552258,
+        "resolved": 1793143355.0386972,
+        "historical_mismatch_check": "75add19d-b4af-4b2d-8846-aff7ac609b21"
+      }
+    },
+    "browser_bulk_restart_actual_windows_boot_timestamps_changed": {
+      "passed": true,
+      "verified_at": 1793143627.4157627,
+      "evidence": {
+        "jobs": [
+          "a2254551-5776-4d4f-b286-b75d7c1f5f4c",
+          "ce9391fd-c551-424b-91ae-2543c3b3cbb6"
+        ],
+        "before": {
+          "301-4": "2026-10-27T22:49:22.5000000Z",
+          "202-100": "2026-10-27T22:49:23.5000000Z"
+        },
+        "after": {
+          "301-4": "2026-10-27T23:26:03.5000000Z",
+          "202-100": "2026-10-27T23:26:00.5000000Z"
+        }
+      }
+    },
+    "browser_shutdown_actual_ec2_stopped": {
+      "passed": true,
+      "verified_at": 1793143729.4595835,
+      "evidence": {
+        "states": {
+          "i-01cb5ad5f59c502d1": "stopped",
+          "i-0e38330c8d82e6b92": "stopped"
+        },
+        "jobs": [
+          "21325911-7804-44c9-a7fc-5e7035d9a742"
+        ]
+      }
+    },
+    "fresh_scan_identifies_both_unresponsive_ips_and_preserves_last_online": {
+      "passed": true,
+      "verified_at": 1793143735.2097032,
+      "evidence": {
+        "check_id": "ded3c2e4-ca47-4937-8ce1-a0c9402764ee",
+        "summary": {
+          "total": 2,
+          "online": 0,
+          "unreachable": 2,
+          "unknown": 0,
+          "hardware_mismatches": 0
+        },
+        "computers": [
+          {
+            "computer_id": "202-100",
+            "ip": "10.3.22.100",
+            "status": "unreachable",
+            "last_online": 1793143695.8651965,
+            "checked_at": 1793143734.402941
+          },
+          {
+            "computer_id": "301-4",
+            "ip": "10.3.31.4",
+            "status": "unreachable",
+            "last_online": 1793143713.1804304,
+            "checked_at": 1793143734.4033659
+          }
+        ]
+      }
+    },
+    "real_wake_magic_packet_captured_on_windows_controller": {
+      "passed": true,
+      "verified_at": 1793143850.4573154,
+      "evidence": {
+        "job": "fb53464a-066f-4527-9730-fc48b1e1fe64",
+        "received_udp_datagrams": 3,
+        "payload_bytes": 102,
+        "magic_packet_payload_matches_target_mac": true,
+        "limit": "EC2 does not support broadcast Wake-on-LAN; physical wake requires campus validation."
+      }
+    },
+    "live_unresponsive_hardware_is_unverified_and_prior_inventory_preserved": {
+      "passed": true,
+      "verified_at": 1793143895.888563,
+      "evidence": {
+        "computers": [
+          {
+            "id": "202-100",
+            "status": "unreachable",
+            "hardware_state": "unknown",
+            "hardware_checked_at": 1793143695.8651965
+          },
+          {
+            "id": "301-4",
+            "status": "unreachable",
+            "hardware_state": "unknown",
+            "hardware_checked_at": 1793143713.1804304
+          }
+        ]
+      }
+    },
+    "daily_history_hardware_incidents_and_checks_survive_actual_web_restart": {
+      "passed": true,
+      "verified_at": 1793143911.8248553,
+      "evidence": true
+    },
+    "owned_validation_fixtures_removed_and_all_three_ec2_instances_stopped": {
+      "passed": true,
+      "verified_at": 1793143950.4932983,
+      "evidence": {
+        "removed_labs": 2,
+        "removed_computers": 2,
+        "removed_users": 3,
+        "retained_audit": true,
+        "states": {
+          "i-01cb5ad5f59c502d1": "stopped",
+          "i-031c50f97a111b9e0": "stopped",
+          "i-0e38330c8d82e6b92": "stopped"
+        },
+        "storage": "Encrypted EBS retained with stopped instances for reuse."
+      }
+    }
+  },
+  "limitations": [
+    "Physical Wake-on-LAN requires campus LAN validation because AWS VPC does not support broadcast.",
+    "Microsoft Entra SSO requires FIAP tenant application registration; local password accounts were tested.",
+    "Daily date rollover was verified by automated tests, not by changing live clocks."
+  ]
+}

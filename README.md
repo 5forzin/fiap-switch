@@ -33,7 +33,9 @@ npm run build --prefix frontend
 
 Production requires HTTPS, private session/controller secrets, an initial administrator, and a controller connected to the laboratory LAN. See [operations](docs/operations.md) for deployment, accounts, addressing, backup, and AWS validation.
 
-The AWS validation on 2026-10-13 verified live health and MAC telemetry, restart with a changed Windows boot timestamp, and shutdown with EC2's stopped state over encrypted, certificate-validated WinRM and the deployed HTTPS queue. The disposable instances, disks, networking, and temporary IAM profile were removed afterward. Physical Wake-on-LAN and the FIAP LAN connection require on-campus validation.
+The AWS validation on 2026-10-27 used a Windows controller and two Windows targets on separate laboratory subnets. It verified real telemetry, restart with changed boot timestamps, shutdown with EC2's stopped state, floor permissions, queue recovery and expiry, daily history, and dated hardware mismatches. Three actual UDP Wake-on-LAN packets were received on the controller and checked against the target MAC. The 1,188-computer UI fixture was isolated from production. See the [validation evidence](docs/validation-2026-10-27.json).
+
+Validation accounts and inventory were removed. All three EC2 instances are stopped; encrypted EBS volumes remain for reuse. Physical Wake-on-LAN and the FIAP LAN connection require on-campus validation.
 
 ## Brand assets
 

@@ -130,6 +130,7 @@ The remote E2E harness requires ignored website credentials in `runtime/login.js
 - [WinRM security](https://learn.microsoft.com/en-us/powershell/scripting/learn/remoting/winrmsecurity)
 - [pywinrm](https://github.com/diyan/pywinrm)
 - [AWS CLI console sign-in](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html)
+- [AWS subnet reservations and broadcast limitations](https://docs.aws.amazon.com/vpc/latest/userguide/subnet-sizing.html)
 
 - [OWASP password storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)
 - [NIST authentication requirements](https://pages.nist.gov/800-63-4/sp800-63b.html)
