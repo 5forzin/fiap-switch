@@ -10,13 +10,21 @@ from backend.models import HardwareStandard
 
 def compare_hardware(actual, standard):
     differences, missing = [], []
+    labels = {
+        "logical_cpus": "Logical CPUs",
+        "memory_gib": "RAM (GiB)",
+        "storage_gib": "Storage (GiB)",
+        "disk_count": "Physical disks",
+        "cpu_model": "CPU model",
+        "gpu_model": "GPU model",
+    }
     for key in ("logical_cpus", "memory_gib", "storage_gib", "disk_count"):
         expected = standard.get(key)
         if expected is None:
             continue
         value = actual.get(key)
         if value is None:
-            missing.append(f"{key} was not reported")
+            missing.append(f"No reading for {labels[key]}")
             continue
         tolerance = expected * 0.05 if key.endswith("_gib") else 0
         valid = (
@@ -25,17 +33,17 @@ def compare_hardware(actual, standard):
             else abs(value - expected) <= tolerance
         )
         if not valid:
-            differences.append(f"{key}: expected {expected}, detected {value}")
+            differences.append(f"{labels[key]}: expected {expected}, detected {value}")
     for key in ("cpu_model", "gpu_model"):
         expected = standard.get(key)
         if not expected:
             continue
         values = actual.get("gpu_models") if key == "gpu_model" else [actual.get(key)]
         if values is None or any(value is None for value in values):
-            missing.append(f"{key} was not reported")
+            missing.append(f"No reading for {labels[key]}")
         elif not any(expected.casefold() in value.casefold() for value in values):
             differences.append(
-                f"{key}: expected {expected}, detected {', '.join(values) or 'none'}"
+                f"{labels[key]}: expected {expected}, detected {', '.join(values) or 'none'}"
             )
     return (
         "mismatch" if differences else "unknown" if missing else "match"

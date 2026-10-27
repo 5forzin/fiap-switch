@@ -761,7 +761,10 @@ function App() {
           mismatches.length > 0 && (
             <div className="hardware-alert" role="alert">
               <Cpu size={18} />
-              <span>{mismatches.length} hardware mismatches detected</span>
+              <span>
+                {mismatches.length} hardware mismatch
+                {mismatches.length === 1 ? "" : "es"} detected
+              </span>
               <button
                 className="text-button"
                 onClick={() => {
@@ -1331,7 +1334,7 @@ function App() {
           <section className="panel">
             <div className="panel-title">
               <h2>Registered laboratories</h2>
-              <span>{data?.labs.length} laboratories</span>
+              <span>{data?.labs.filter(l => floor === null || l.floor === floor).length} laboratories</span>
             </div>
             <div className="filters">
               <label className="select-field">
@@ -1405,8 +1408,8 @@ function App() {
                     ))}
                 </tbody>
               </table>
-              {!data?.labs.length && (
-                <div className="empty">Add the first laboratory.</div>
+              {!data?.labs.some(l => floor === null || l.floor === floor) && (
+                <div className="empty">No laboratories on this floor.</div>
               )}
             </div>
           </section>

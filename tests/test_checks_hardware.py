@@ -1,11 +1,11 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
+from test_access import login
 
 from backend.checks import record_observation
 from backend.db import connect, inventory
 from backend.hardware import compare_hardware
 from backend.models import Report
-from test_access import login
-
 
 HARDWARE = {
     "cpu_model": "Intel Core i7",
@@ -89,7 +89,7 @@ def test_fresh_results_complete_checks_and_remain_immutable(client):
 
 def test_daily_history_timezone_last_online_and_day_rollover(client):
     cfg = client.app.state.settings
-    first = datetime(2026, 10, 28, 2, 59, 59, tzinfo=timezone.utc).timestamp()
+    first = datetime(2026, 10, 28, 2, 59, 59, tzinfo=UTC).timestamp()
     with connect(cfg.database_path) as db:
         pc = next(row for row in inventory(db) if row["id"] == "301-1")
         record_observation(db, pc, Report(computer_id=pc["id"], status="online"), first)
@@ -167,7 +167,7 @@ def test_hardware_mismatch_date_persists_and_resolution_is_recorded(client):
         pc["hardware_state"] == "mismatch"
         and pc["hardware_mismatch_since"] == events[0]["detected"]
     )
-    assert "memory_gib" in pc["hardware_differences"][0]
+    assert "RAM (GiB)" in pc["hardware_differences"][0]
     report(client)
     resolved = client.get("/api/hardware-events").json()[0]
     assert (
@@ -217,11 +217,29 @@ def test_missing_telemetry_is_unverified_and_network_loss_does_not_resolve_issue
     report(client, status="unreachable")
     after = client.get("/api/hardware-events").json()[0]
     assert before["detected"] == after["detected"] and after["resolved"] is None
+    pc = next(
+        p
+        for p in client.get("/api/dashboard").json()["computers"]
+        if p["id"] == "301-1"
+    )
+    assert pc["hardware_state"] == "unknown"
+    assert pc["hardware_mismatch_since"] == before["detected"]
+    assert pc["hardware"]["logical_cpus"] == 4
     day = client.get("/api/history").json()[0]["day"]
     assert (
         client.get("/api/history/" + day).json()["computers"][0]["hardware_state"]
         == "unknown"
     )
+    report(client)
+    cfg = client.app.state.settings
+    with connect(cfg.database_path) as db:
+        db.execute("UPDATE computers SET last_seen=1 WHERE id='301-1'")
+    pc = next(
+        p
+        for p in client.get("/api/dashboard").json()["computers"]
+        if p["id"] == "301-1"
+    )
+    assert pc["hardware_state"] == "unknown" and pc["status"] == "unknown"
 
 
 def test_hardware_tolerance_minimum_and_gpu_comparison():

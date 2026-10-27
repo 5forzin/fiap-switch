@@ -2,11 +2,14 @@
 
 import argparse
 import base64
+import json
 import secrets
 import time
+from pathlib import Path
 from uuid import uuid4
 
 import httpx
+from botocore.exceptions import ClientError
 
 from scripts.live_validation import URL, Validation
 
@@ -632,10 +635,224 @@ def restart_after(v):
                     )
                     health(v)
                     return
-            except Exception as error:
+            except (ClientError, RuntimeError, TimeoutError) as error:
                 print(f"Waiting for Windows reboot: {type(error).__name__}", flush=True)
             time.sleep(10)
         raise TimeoutError("Actual Windows boot timestamps did not change.")
+
+
+def shutdown_after(v):
+    with v.client() as admin:
+        jobs = v.wait(
+            lambda: [
+                j
+                for j in admin.get("/api/dashboard").json()["jobs"]
+                if j["action"] == "shutdown" and j["state"] == "completed"
+            ],
+            "Shutdown was not delivered.",
+            120,
+        )
+        stopped = v.wait(
+            lambda: (
+                (states if all(s == "stopped" for s in states.values()) else None)
+                if (states := v.target_states())
+                else None
+            ),
+            "Windows targets did not stop.",
+            300,
+        )
+        v.record(
+            "browser_shutdown_actual_ec2_stopped",
+            {"states": stopped, "jobs": [j["id"] for j in jobs]},
+        )
+        check_id = admin.post("/api/checks", json={}).json()["id"]
+
+        def checked():
+            result = admin.get(f"/api/checks/{check_id}").json()
+            return result if result["state"] == "completed" else None
+
+        result = v.wait(checked, "Stopped machines were not checked.", 180)
+        assert result["summary"]["unreachable"] == 2
+        assert all(pc["last_online"] for pc in result["computers"])
+        v.record(
+            "fresh_scan_identifies_both_unresponsive_ips_and_preserves_last_online",
+            {
+                "check_id": check_id,
+                "summary": result["summary"],
+                "computers": [
+                    {
+                        k: pc[k]
+                        for k in (
+                            "computer_id",
+                            "ip",
+                            "status",
+                            "last_online",
+                            "checked_at",
+                        )
+                    }
+                    for pc in result["computers"]
+                ],
+            },
+        )
+
+
+def wake_capture(v):
+    controller = v.state["controller"]
+    # ENA did not expose these packets to PktMon. Receive real local UDP broadcasts instead.
+    listener = (
+        "import socket,json; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); "
+        "s.bind(('',9)); s.settimeout(30); "
+        "packets=[s.recvfrom(4096)[0].hex() for _ in range(3)]; "
+        "print(json.dumps({'packets':packets}))"
+    )
+    encoded = base64.b64encode(listener.encode()).decode()
+    command = v.send(
+        controller,
+        f'''& C:\\fiap-switch\\python\\python.exe -c "import base64; exec(base64.b64decode('{encoded}'))"''',
+    )
+    time.sleep(3)
+    with v.client() as admin:
+        pc = next(
+            p
+            for p in admin.get("/api/dashboard").json()["computers"]
+            if p["id"] == "301-4"
+        )
+        response = v.action(admin, [pc["id"]], "wake")
+        response.raise_for_status()
+        jid = response.json()["job_ids"][0]
+
+        def delivered():
+            job = next(
+                j for j in admin.get("/api/dashboard").json()["jobs"] if j["id"] == jid
+            )
+            return job if job["state"] == "completed" else None
+
+        v.wait(delivered, "Wake packet was not sent.", 120)
+    packets = json.loads(v.wait_command(controller, command, 90))["packets"]
+    expected = b"\xff" * 6 + bytes.fromhex(pc["mac"].replace(":", "")) * 16
+    assert len(packets) == 3 and all(
+        bytes.fromhex(packet) == expected for packet in packets
+    )
+    assert all(s == "stopped" for s in v.target_states().values())
+    v.record(
+        "real_wake_magic_packet_captured_on_windows_controller",
+        {
+            "job": jid,
+            "received_udp_datagrams": len(packets),
+            "payload_bytes": len(expected),
+            "magic_packet_payload_matches_target_mac": True,
+            "limit": "EC2 does not support broadcast Wake-on-LAN; physical wake requires campus validation.",
+        },
+    )
+
+
+def persistence(v):
+    with v.client() as admin:
+        before = {
+            "checks": admin.get("/api/checks").json(),
+            "history": admin.get("/api/history").json(),
+            "events": admin.get("/api/hardware-events").json(),
+        }
+        v.ssh(
+            "import subprocess; subprocess.run(['sudo','-n','docker','restart','fiap-switch-web-1'],check=True)"
+        )
+        v.wait(
+            lambda: admin.get("/healthz").status_code == 200, "Web restart failed.", 90
+        )
+        after = {
+            "checks": admin.get("/api/checks").json(),
+            "history": admin.get("/api/history").json(),
+            "events": admin.get("/api/hardware-events").json(),
+        }
+        assert before == after
+        v.record(
+            "daily_history_hardware_incidents_and_checks_survive_actual_web_restart",
+            True,
+        )
+
+
+def export_results(v):
+    output = {
+        "date": "2026-10-27",
+        "environment": "Published HTTPS application, Windows Server 2022 controller and two native WinRM HTTPS targets in an isolated AWS VPC.",
+        "results": v.results,
+        "limitations": [
+            "Physical Wake-on-LAN requires campus LAN validation because AWS VPC does not support broadcast.",
+            "Microsoft Entra SSO requires FIAP tenant application registration; local password accounts were tested.",
+            "Daily date rollover was verified by automated tests, not by changing live clocks.",
+        ],
+    }
+    Path("docs/validation-2026-10-27.json").write_text(
+        json.dumps(output, indent=2) + "\n"
+    )
+    print(
+        f"Exported {len(v.results)} checks without private infrastructure state.",
+        flush=True,
+    )
+
+
+def cleanup(v):
+    print(
+        v.powershell(
+            v.state["controller"],
+            "Stop-ScheduledTask -TaskName FIAP-Switch-Collector; 'Collector stopped.'",
+        ),
+        flush=True,
+    )
+    fixture = {
+        "labs": v.state["fixture_labs"],
+        "users": [a["payload"]["id"] for a in v.accounts.values()],
+    }
+    script = """
+import json
+from backend.db import connect
+fixture = json.loads(FIXTURE)
+with connect('/app/data/switch.db') as db:
+    labs = [r['id'] for r in db.execute('SELECT id,label FROM labs') if r['id'] in fixture['labs'] and r['label'].startswith('AWS validation')]
+    users = [r['id'] for r in db.execute('SELECT id,email FROM users') if r['id'] in fixture['users'] and r['email'].startswith('e2e-20261027-')]
+    computers = [r['id'] for r in db.execute('SELECT id,lab_id FROM computers') if r['lab_id'] in labs]
+    jobs = [r['id'] for r in db.execute('SELECT id,computer_id,actor_id FROM jobs') if r['computer_id'] in computers or r['actor_id'] in users]
+    for r in db.execute('SELECT id,actor_id,jobs FROM requests').fetchall():
+        if r['actor_id'] in users or any(j in jobs for j in json.loads(r['jobs'])):
+            db.execute('DELETE FROM requests WHERE id=? AND actor_id=?', (r['id'],r['actor_id']))
+    for jid in jobs:
+        db.execute('DELETE FROM jobs WHERE id=?', (jid,))
+    checks = {r['check_id'] for r in db.execute('SELECT check_id,lab_id FROM check_results') if r['lab_id'] in labs}
+    for lid in labs:
+        for table in ('check_results','daily_status','hardware_events','hardware_standards','computers'):
+            db.execute(f'DELETE FROM {table} WHERE lab_id=?', (lid,))
+        db.execute('DELETE FROM labs WHERE id=?', (lid,))
+    for cid in checks:
+        db.execute('DELETE FROM checks WHERE id=? AND NOT EXISTS(SELECT 1 FROM check_results WHERE check_id=?)', (cid,cid))
+    for uid in users:
+        for table in ('sessions','credentials'):
+            db.execute(f'DELETE FROM {table} WHERE user_id=?', (uid,))
+        db.execute('DELETE FROM users WHERE id=?', (uid,))
+    db.execute("DELETE FROM login_attempts WHERE username LIKE 'e2e-20261027-%'")
+    print(json.dumps({'removed_labs':len(labs),'removed_computers':len(computers),'removed_users':len(users),'retained_audit':True}))
+""".replace("FIXTURE", repr(json.dumps(fixture)))
+    removed = json.loads(v.ssh(script, docker=True))
+    v.ec2.stop_instances(InstanceIds=v.state["instances"])
+
+    def stopped():
+        states = {
+            i["InstanceId"]: i["State"]["Name"]
+            for r in v.ec2.describe_instances(InstanceIds=v.state["instances"])[
+                "Reservations"
+            ]
+            for i in r["Instances"]
+        }
+        return states if all(s == "stopped" for s in states.values()) else None
+
+    states = v.wait(stopped, "Owned validation instances did not stop.", 300)
+    v.record(
+        "owned_validation_fixtures_removed_and_all_three_ec2_instances_stopped",
+        {
+            **removed,
+            "states": states,
+            "storage": "Encrypted EBS retained with stopped instances for reuse.",
+        },
+    )
 
 
 if __name__ == "__main__":
@@ -654,6 +871,11 @@ if __name__ == "__main__":
             "failure",
             "restart_before",
             "restart_after",
+            "shutdown_after",
+            "wake_capture",
+            "persistence",
+            "export_results",
+            "cleanup",
         ],
     )
     args = parser.parse_args()

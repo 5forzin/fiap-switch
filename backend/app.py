@@ -260,6 +260,8 @@ def create_app(settings: Settings | None = None):
                     if item['stale']:
                         item['status'] = 'unknown'
                         item['metrics'] = {}
+                        if item['hardware_state'] != 'unconfigured':
+                            item['hardware_state'] = 'unknown'
                     item['can_control'] = allowed(user, row, True)
                     computers.append(item)
             lab_ids = {c['lab_id'] for c in computers}
@@ -409,7 +411,9 @@ def create_app(settings: Settings | None = None):
                 computer = db.execute('SELECT c.*,l.floor FROM computers c JOIN labs l ON l.id=c.lab_id WHERE c.id=?',(r.computer_id,)).fetchone()
                 if r.status=='online' and r.hardware is not None:
                     update_hardware(db,computer,r.hardware.model_dump(exclude_none=True),now)
-                    computer = db.execute('SELECT c.*,l.floor FROM computers c JOIN labs l ON l.id=c.lab_id WHERE c.id=?',(r.computer_id,)).fetchone()
+                else:
+                    db.execute("UPDATE computers SET hardware_state=CASE WHEN hardware_state='unconfigured' THEN 'unconfigured' ELSE 'unknown' END WHERE id=?", (r.computer_id,))
+                computer = db.execute('SELECT c.*,l.floor FROM computers c JOIN labs l ON l.id=c.lab_id WHERE c.id=?',(r.computer_id,)).fetchone()
                 record_observation(db,computer,r,now)
             db.execute('UPDATE collectors SET last_seen=? WHERE id=?', (time.time(), cid))
         return {'ok': True}

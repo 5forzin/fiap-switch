@@ -254,7 +254,7 @@ export function ChecksPanel({
                 result.summary.hardware_mismatches ? "attention-text" : ""
               }
             >
-              {result.summary.hardware_mismatches} hardware mismatches
+              {result.summary.hardware_mismatches} hardware mismatch{result.summary.hardware_mismatches === 1 ? "" : "es"}
             </span>
             {mode === "runs" && (
               <strong>{stateLabel[result.state || "unknown"]}</strong>
