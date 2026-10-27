@@ -9,10 +9,11 @@ import boto3
 
 STATE = Path('runtime/aws-lab.json')
 NAME = 'fiap-switch-e2e'
+REGION = 'sa-east-1'
 
 
-def clients():
-    session = boto3.Session(profile_name='fiap-switch', region_name='sa-east-1')
+def clients(region=None):
+    session = boto3.Session(profile_name='fiap-switch', region_name=region or REGION)
     return session.client('ec2'), session.client('iam'), session.client('ssm')
 
 
@@ -21,11 +22,11 @@ def save(state):
     STATE.write_text(json.dumps(state, indent=2))
 
 
-def provision():
+def provision(windows_controller=False, target_count=1):
     if STATE.exists():
         raise SystemExit('Existing lab state found. Inspect or destroy that lab before provisioning.')
     ec2, iam, ssm = clients()
-    state = {'region': 'sa-east-1', 'instances': [], 'created': time.time()}
+    state = {'region': REGION, 'instances': [], 'created': time.time(), 'controller_platform': 'windows' if windows_controller else 'linux', 'targets': []}
     save(state)
     trust = {'Version': '2012-10-17', 'Statement': [{'Effect': 'Allow', 'Principal': {'Service': 'ec2.amazonaws.com'}, 'Action': 'sts:AssumeRole'}]}
     role = iam.create_role(RoleName=NAME, AssumeRolePolicyDocument=json.dumps(trust), Tags=[{'Key': 'Project', 'Value': NAME}])['Role']['RoleName']
@@ -43,6 +44,7 @@ def provision():
     ec2.modify_vpc_attribute(VpcId=vpc, EnableDnsHostnames={'Value': True})
     subnet = ec2.create_subnet(VpcId=vpc, CidrBlock='10.3.31.0/24')['Subnet']['SubnetId']
     state['subnet'] = subnet
+    state['subnets'] = [subnet]
     save(state)
     gateway = ec2.create_internet_gateway()['InternetGateway']['InternetGatewayId']
     state['gateway'] = gateway
@@ -63,23 +65,35 @@ def provision():
     save(state)
     windows_ami = ssm.get_parameter(Name='/aws/service/ami-windows-latest/Windows_Server-2022-English-Full-Base')['Parameter']['Value']
     linux_ami = ssm.get_parameter(Name='/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64')['Parameter']['Value']
-    windows_script = '<powershell>' + (Path(__file__).parent/'windows-bootstrap.ps1').read_text().replace('__PASSWORD__', password).replace('10.3.31.1', '10.3.31.11') + '</powershell>'
+    def windows_script(ip):
+        script = (Path(__file__).parent/'windows-bootstrap.ps1').read_text()
+        return '<powershell>' + script.replace('__PASSWORD__', password).replace('10.3.31.1', ip).replace('10.3.31.0/24', '10.3.0.0/16') + '</powershell>'
     linux_script = '#!/bin/bash\nset -eu\ndnf install -y python3.12 python3.12-pip\nmkdir -p /opt/fiap-switch\n'
+    nodes = [('controller', windows_ami if windows_controller else linux_ami, 't3.small' if windows_controller else 't3.micro', '10.3.31.10',
+              '<powershell>New-Item -ItemType Directory -Path C:\\fiap-switch -Force</powershell>' if windows_controller else linux_script, subnet)]
+    for index in range(target_count):
+        ip = ('10.3.31.4' if windows_controller else '10.3.31.11') if index == 0 else '10.3.22.100'
+        target_subnet = subnet
+        if index == 1:
+            target_subnet = ec2.create_subnet(VpcId=vpc, CidrBlock='10.3.22.0/24')['Subnet']['SubnetId']
+            ec2.associate_route_table(RouteTableId=table, SubnetId=target_subnet)
+            state['subnets'].append(target_subnet)
+            save(state)
+        nodes.append(('windows' if index == 0 else 'windows2', windows_ami, 't3.small', ip, windows_script(ip), target_subnet))
     # IAM propagation is eventually consistent. Retry only the pre-instance validation.
-    for kind, ami, instance_type, ip, script in [
-        ('controller', linux_ami, 't3.micro', '10.3.31.10', linux_script),
-        ('windows', windows_ami, 't3.small', '10.3.31.11', windows_script),
-    ]:
+    for kind, ami, instance_type, ip, script, node_subnet in nodes:
         for attempt in range(12):
             try:
                 launched = ec2.run_instances(ImageId=ami, InstanceType=instance_type, MinCount=1, MaxCount=1,
                     IamInstanceProfile={'Name': NAME}, UserData=script,
-                    NetworkInterfaces=[{'DeviceIndex': 0, 'SubnetId': subnet, 'Groups': [group], 'PrivateIpAddress': ip, 'AssociatePublicIpAddress': True}],
+                    NetworkInterfaces=[{'DeviceIndex': 0, 'SubnetId': node_subnet, 'Groups': [group], 'PrivateIpAddress': ip, 'AssociatePublicIpAddress': True}],
                     MetadataOptions={'HttpTokens': 'required', 'HttpEndpoint': 'enabled'},
-                    BlockDeviceMappings=[{'DeviceName': '/dev/sda1' if kind == 'windows' else '/dev/xvda', 'Ebs': {'VolumeSize': 30 if kind == 'windows' else 8, 'VolumeType': 'gp3', 'Encrypted': True, 'DeleteOnTermination': True}}],
+                    BlockDeviceMappings=[{'DeviceName': '/dev/sda1' if ami == windows_ami else '/dev/xvda', 'Ebs': {'VolumeSize': 30 if ami == windows_ami else 8, 'VolumeType': 'gp3', 'Encrypted': True, 'DeleteOnTermination': True}}],
                     TagSpecifications=[{'ResourceType': 'instance', 'Tags': [{'Key': 'Name', 'Value': f'{NAME}-{kind}'}, {'Key': 'Project', 'Value': NAME}]}])['Instances'][0]['InstanceId']
                 state[kind] = launched
                 state['instances'].append(launched)
+                if kind.startswith('windows'):
+                    state['targets'].append({'instance_id': launched, 'ip': ip, 'computer_id': f'301-{ip.split(".")[-1]}' if kind == 'windows' else '202-100'})
                 save(state)
                 print(f'{kind}: {launched}', flush=True)
                 break
@@ -99,15 +113,23 @@ def command(ssm, instance, script, windows=False, timeout=180):
 
 
 def main():
+    global STATE, REGION, NAME
     parser = argparse.ArgumentParser()
     parser.add_argument('action', choices=['provision', 'status', 'stop', 'destroy', 'send'])
-    parser.add_argument('--target', choices=['controller', 'windows'], default='controller')
+    parser.add_argument('--target', choices=['controller', 'windows', 'windows2'], default='controller')
     parser.add_argument('--script')
+    parser.add_argument('--region', default=REGION)
+    parser.add_argument('--state', type=Path, default=STATE)
+    parser.add_argument('--name', default=NAME)
+    parser.add_argument('--windows-controller', action='store_true')
+    parser.add_argument('--targets', type=int, choices=[1, 2], default=1)
     args = parser.parse_args()
+    STATE, REGION, NAME = args.state, args.region, args.name
     if args.action == 'provision':
-        provision()
+        provision(args.windows_controller, args.targets)
         return
     state = json.loads(STATE.read_text())
+    REGION = state['region']
     ec2, iam, ssm = clients()
     if args.action == 'status':
         for reservation in ec2.describe_instances(InstanceIds=state['instances'])['Reservations']:
@@ -118,15 +140,15 @@ def main():
         ec2.stop_instances(InstanceIds=state['instances'])
         print('Stop requested for all lab instances.')
     elif args.action == 'send':
-        command(ssm, state[args.target], Path(args.script).read_text(), args.target == 'windows')
+        command(ssm, state[args.target], Path(args.script).read_text(), args.target.startswith('windows') or state.get('controller_platform')=='windows')
     elif args.action == 'destroy':
         if state['instances']:
             ec2.terminate_instances(InstanceIds=state['instances'])
             ec2.get_waiter('instance_terminated').wait(InstanceIds=state['instances'])
         if state.get('group'):
             ec2.delete_security_group(GroupId=state['group'])
-        if state.get('subnet'):
-            ec2.delete_subnet(SubnetId=state['subnet'])
+        for subnet in state.get('subnets', [state['subnet']] if state.get('subnet') else []):
+            ec2.delete_subnet(SubnetId=subnet)
         if state.get('route_table'):
             ec2.delete_route_table(RouteTableId=state['route_table'])
         if state.get('gateway'):

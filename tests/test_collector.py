@@ -40,7 +40,17 @@ def test_power_actions_are_fixed_and_encrypted(controller):
 
 
 def test_winrm_failure_does_not_claim_power_off(controller):
-    with patch.object(controller, 'session', side_effect=TimeoutError('sensitive details')):
-        report = controller.probe({'id': '301-1'})
+    with patch('collector.service.socket.create_connection'), patch.object(controller, 'session', side_effect=TimeoutError('sensitive details')):
+        report = controller.probe({'id': '301-1', 'ip': '10.3.31.1', 'hostname': ''})
         assert report['status'] == 'unreachable'
         assert 'sensitive details' not in report['issue']
+
+
+def test_offline_probe_uses_short_tcp_timeout_and_never_connects_outside_lan(controller):
+    with patch('collector.service.socket.create_connection',side_effect=TimeoutError) as tcp, patch.object(controller,'session') as winrm:
+        result=controller.probe({'id':'301-1','ip':'10.3.31.1','hostname':''})
+        assert result['status']=='unreachable' and not winrm.called
+        assert tcp.call_args.kwargs['timeout']==2
+        tcp.reset_mock()
+        result=controller.probe({'id':'outside','ip':'8.8.8.8','hostname':''})
+        assert result['status']=='unreachable' and not tcp.called

@@ -5,6 +5,7 @@ import logging
 import os
 import socket
 import time
+import threading
 from urllib.parse import urlparse
 
 import httpx
@@ -17,8 +18,13 @@ log = logging.getLogger('collector')
 HEALTH_SCRIPT = r'''
 $ErrorActionPreference = 'Stop'
 $os = Get-CimInstance Win32_OperatingSystem
-$cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
+$processors = @(Get-CimInstance Win32_Processor)
+$cpu = ($processors | Measure-Object -Property LoadPercentage -Average).Average
 $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
+$system = Get-CimInstance Win32_ComputerSystem
+$physicalDisks = @(Get-CimInstance Win32_DiskDrive)
+$gpuModels = $null
+try { $gpuModels = @(Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name }) } catch { }
 $adapter = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' | Where-Object { $_.DefaultIPGateway } | Select-Object -First 1
 [ordered]@{
     cpu = [math]::Round([double]$cpu, 1)
@@ -27,6 +33,14 @@ $adapter = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=
     uptime_hours = [math]::Round(((Get-Date) - $os.LastBootUpTime).TotalHours, 1)
     os = $os.Caption
     mac = $adapter.MACAddress
+    hardware = [ordered]@{
+        cpu_model = [string]$processors[0].Name
+        logical_cpus = [int]$system.NumberOfLogicalProcessors
+        memory_gib = [math]::Round($system.TotalPhysicalMemory / 1GB, 2)
+        storage_gib = [math]::Round(($physicalDisks | Measure-Object -Property Size -Sum).Sum / 1GB, 2)
+        disk_count = $physicalDisks.Count
+        gpu_models = $gpuModels
+    }
 } | ConvertTo-Json -Compress
 '''
 POWER_SCRIPTS = {
@@ -55,6 +69,8 @@ class Controller:
         self.ca = os.getenv('WINRM_CA_BUNDLE') or None
         self.workers = min(16, max(1, int(os.getenv('PROBE_WORKERS', '8'))))
         self.interval = max(15, int(os.getenv('PROBE_INTERVAL', '60')))
+        self.connect_timeout = min(10, max(0.5, float(os.getenv('TCP_CONNECT_TIMEOUT', '2'))))
+        self.check_requested = threading.Event()
         self.client = httpx.Client(base_url=self.base_url, timeout=20,
             headers={'Authorization': f"Bearer {os.environ['COLLECTOR_TOKEN']}"}, follow_redirects=False)
 
@@ -80,12 +96,16 @@ class Controller:
 
     def probe(self, computer):
         try:
+            self.target(computer)
+            with socket.create_connection((computer['ip'], self.port), timeout=self.connect_timeout):
+                pass
             result = self.session(computer).run_ps(HEALTH_SCRIPT)
             if result.status_code:
                 return {'computer_id': computer['id'], 'status': 'unreachable', 'issue': 'WinRM health query was rejected.'}
             metrics = json.loads(result.std_out.decode('utf-8-sig').strip())
             mac = metrics.pop('mac', '') or ''
-            return {'computer_id': computer['id'], 'status': 'online', 'metrics': metrics, 'mac': mac}
+            hardware = metrics.pop('hardware', None)
+            return {'computer_id': computer['id'], 'status': 'online', 'metrics': metrics, 'mac': mac, 'hardware': hardware}
         except Exception as error:
             # Error text can contain authentication details; report only the exception class.
             return {'computer_id': computer['id'], 'status': 'unreachable', 'issue': f'WinRM could not verify this computer ({type(error).__name__}).'}
@@ -140,17 +160,21 @@ class Controller:
                 computers = response.json()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=self.workers) as pool:
                     batch = []
-                    for report in pool.map(self.probe, computers):
-                        batch.append(report)
-                        if len(batch) == 100:
+                    flushed = time.monotonic()
+                    futures = [pool.submit(self.probe, computer) for computer in computers]
+                    for future in concurrent.futures.as_completed(futures):
+                        batch.append(future.result())
+                        if len(batch) >= 20 or time.monotonic()-flushed >= 5:
                             self.post('/api/collector/reports', {'reports': batch})
                             batch = []
+                            flushed = time.monotonic()
                     if batch:
                         self.post('/api/collector/reports', {'reports': batch})
                 log.info('Checked %s computers.', len(computers))
             except Exception as error:
                 log.warning('Health cycle failed (%s).', type(error).__name__)
-            time.sleep(self.interval)
+            self.check_requested.wait(self.interval)
+            self.check_requested.clear()
 
     def run(self):
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as worker:
@@ -158,6 +182,10 @@ class Controller:
             while True:
                 try:
                     self.poll()
+                    pending = self.client.get('/api/collector/checks')
+                    pending.raise_for_status()
+                    if pending.json()['pending']:
+                        self.check_requested.set()
                 except Exception as error:
                     log.warning('Command polling failed (%s).', type(error).__name__)
                 time.sleep(2)

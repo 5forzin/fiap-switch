@@ -2,6 +2,8 @@
 
 Agentless laboratory power control with individual password accounts, administrator and floor-scoped monitor access, WinRM health reporting, and Wake-on-LAN. Microsoft Entra SSO is available as an optional authentication mode.
 
+The overview summarizes floors 1–7, 10, and 11. Computer lists default to a floor and laboratory, with search, hardware filters, and 50-row pages. Saved verifications and daily observations identify each computer's last response and last confirmed online time. Administrators configure a hardware standard per laboratory; scans record dated mismatches and their resolution.
+
 React + TypeScript, FastAPI, a transactional SQLite command queue, and a Python LAN controller. The interface uses the official FIAP logo and the Gotham Book, Light, and Bold fonts observed in the FIAP intranet.
 
 ## Run locally

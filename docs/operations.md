@@ -62,6 +62,8 @@ The lab wizard creates PCs 1 through the entered student count, plus the optiona
 
 ## State and commands
 
+The overview shows floor summaries without rendering every computer. Opening **Computers** selects the first accessible floor and its first laboratory. Changing the floor selects its first laboratory automatically. An explicit **All assigned floors** selection is available for authorized cross-floor operations; tables remain paginated.
+
 - **Online:** WinRM returned a valid health report.
 - **Unreachable:** WinRM could not verify the computer. This does not prove the computer is powered off.
 - **Unknown:** no report, or the last report is older than 120 seconds.
@@ -69,6 +71,24 @@ The lab wizard creates PCs 1 through the entered student count, plus the optiona
 Every command is authorized server-side against the current user grants. Mixed unauthorized batches are rejected in full. Commands use an idempotency key, expire after five minutes before delivery, and have a two-minute execution lease. An expired lease is marked failed with unknown outcome and is never automatically retried.
 
 Shut down and restart schedule a 60-second Windows notice. Windows scheduled shutdown implies forced application termination at the end of that notice; users must save their work. The UI requires confirmation. **Delivered** means Windows accepted the command or a Wake-on-LAN packet was sent. Actual reachability comes from the next probe.
+
+## Floor checks and daily history
+
+Use **Checks & history** to request a fresh verification for a floor, or all assigned floors. The controller wakes its monitoring cycle, probes the computers, and saves each result. Identical pending requests are reused. Completed verification results are immutable, including the hardware measured during that verification. A verification expires after 15 minutes if the controller cannot finish it.
+
+Every real controller report also updates the current day's observation for that computer, using `America/Sao_Paulo`. A new daily record is created automatically on the first observation of each day. Daily history keeps the latest status, first and latest observation times, last confirmed online time, and hardware result. No record is fabricated for a day without observations. Historical results remain subject to the user's current floor, laboratory, and computer grants; results are paginated on the server.
+
+**No response** identifies computers whose WinRM health could not be verified. A missing network response cannot establish that electrical power is off. **Not verified** identifies missing or stale observations. Both the UI and saved results include observation times so that old data is not presented as a fresh verification.
+
+## Hardware standards
+
+In **Inventory**, select a floor and set each laboratory's hardware standard. Optional requirements cover CPU model, logical CPU count, RAM, total physical storage, disk count, and GPU model. Model requirements use case-insensitive substring matching. Capacities are expressed in GiB.
+
+**Exact inventory** compares configured counts and capacities; **Minimum capacities** accepts values at or above the configured capacities. RAM and storage allow a 5% tolerance in both modes to account for reported usable capacity. Empty requirements are ignored. Missing required telemetry is marked unverified and cannot produce a successful match.
+
+Real WinRM/CIM observations create a hardware incident on the first mismatch, preserve its detection time through subsequent mismatches, and record when fresh data resolves it. The expected standard, detected hardware, differences, and resolution remain in the incident history. Disabling a standard is recorded separately from a successful hardware match. Changing the standard requires a new observation before the current result is confirmed.
+
+The collector uses a short TCP connectivity check before WinRM negotiation and sends completed probes in batches as they arrive, preventing unresponsive machines from blocking earlier healthy results. `TCP_CONNECT_TIMEOUT` defaults to two seconds; its allowed runtime range is 0.5–10 seconds.
 
 ## Hosting and backup
 
@@ -90,6 +110,14 @@ python infra/aws_lab.py destroy
 ```
 
 Provisioning uses one Linux t3.micro controller and one Windows Server 2022 t3.small target, private WinRM access, SSM administration, encrypted EBS, and IMDSv2. AWS reserves subnet addresses `.0`–`.3`; the target uses `10.3.31.11`. A generated local password and resource IDs stay in ignored `runtime/aws-lab.json`. The Windows local-account policy is used only in this disposable lab, not in the FIAP domain configuration.
+
+For an entirely Windows laboratory across two floors, use a separate state file:
+
+```powershell
+python infra/aws_lab.py provision --region us-east-2 --state runtime/aws-validation-20261027.json --name fiap-switch-e2e-20261027 --windows-controller --targets 2
+```
+
+This creates a Windows controller at `10.3.31.10`, a student workstation at `10.3.31.4`, and a professor workstation at `10.3.22.100`. WinRM certificates include private IP and DNS SANs. The Windows controller bootstrap verifies the Python installer's signature; its collector runs as a startup scheduled task with private configuration restricted to SYSTEM and administrators. `scripts/live_validation.py` and `scripts/validate_features.py` exercise the deployed HTTPS API and actual Windows transitions. Local validation uses the authorized SOCKS5 endpoint at `127.0.0.1:1080`; `scripts/browser_gateway.py` forwards the UI through that proxy while validating upstream TLS and preserving production cookie settings. The gateway binds only to loopback and is a test tool.
 
 The account may restrict instance types to its Free Tier eligible set. `t3.small` was accepted for the Windows target during validation. If provisioning fails partway through, inspect the recorded resource state and destroy it before creating another lab. `stop` leaves chargeable EBS volumes; `destroy` removes all owned resources and volumes.
 

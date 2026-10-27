@@ -24,6 +24,9 @@ import {
   X,
 } from "lucide-react";
 import "./style.css";
+import { ChecksPanel } from "./ChecksPanel";
+import { HardwareStandardForm } from "./HardwareStandardForm";
+import type { Hardware, HardwareStandard } from "./inventory";
 
 type User = {
   id: string;
@@ -54,6 +57,11 @@ type PC = {
   issue: string;
   stale: boolean;
   can_control: boolean;
+  hardware: Hardware;
+  hardware_state: string;
+  hardware_checked_at: number | null;
+  hardware_mismatch_since: number | null;
+  hardware_differences: string[];
   metrics: {
     cpu?: number;
     memory?: number;
@@ -69,6 +77,7 @@ type Lab = {
   label: string;
   subnet: string;
   broadcast: string;
+  hardware_standard?: HardwareStandard | null;
 };
 type Job = {
   id: string;
@@ -95,11 +104,12 @@ type Audit = {
   created: number;
   detail: string;
 };
-type View = "overview" | "computers" | "activity" | "access" | "inventory";
+type View =
+  "overview" | "computers" | "activity" | "access" | "inventory" | "checks";
 const labels: Record<string, string> = {
   online: "Online",
   offline: "Offline",
-  unreachable: "Unreachable",
+  unreachable: "No response",
   unknown: "Unknown",
   wake: "Power on",
   shutdown: "Shut down",
@@ -148,6 +158,8 @@ function App() {
   const [newLab, setNewLab] = useState(false);
   const [passwordDialog, setPasswordDialog] = useState(false);
   const [page, setPage] = useState(0);
+  const [hardwareFilter, setHardwareFilter] = useState("all");
+  const [standardLab, setStandardLab] = useState<Lab | null>(null);
   const user = session?.user;
   const admin = user?.role === "admin";
   const activeUser = React.useRef(user?.id);
@@ -162,6 +174,8 @@ function App() {
     setConfirm(null);
     setPasswordDialog(false);
     setNewLab(false);
+    setStandardLab(null);
+    setHardwareFilter("all");
     setMenu(false);
     setSelection([]);
     setFloor(null);
@@ -236,12 +250,11 @@ function App() {
   }, [view, user?.id, data?.jobs.length]);
   useEffect(() => {
     setSelection([]);
-    setLab("all");
   }, [floor, view]);
   useEffect(() => {
     setPage(0);
     setSelection([]);
-  }, [floor, view, lab, status, search]);
+  }, [floor, view, lab, status, search, hardwareFilter]);
   useEffect(() => {
     if (notice) {
       const id = setTimeout(() => setNotice(""), 5000);
@@ -256,6 +269,7 @@ function App() {
         setNewLab(false);
         setConfirm(null);
         setPasswordDialog(false);
+        setStandardLab(null);
         setMenu(false);
       }
     };
@@ -404,11 +418,22 @@ function App() {
     (c) =>
       (lab === "all" || c.lab_id === lab) &&
       (status === "all" || c.status === status) &&
+      (hardwareFilter === "all" ||
+        (hardwareFilter === "mismatch"
+          ? Boolean(c.hardware_mismatch_since)
+          : c.hardware_state === hardwareFilter)) &&
       `${c.hostname} ${c.ip} ${c.lab_label} ${c.number === 100 ? "professor" : ""}`
         .toLowerCase()
         .includes(search.toLowerCase()),
   );
-  const floors = [...new Set(all.map((c) => c.floor))].sort((a, b) => a - b),
+  const floors = admin
+      ? session?.floors || []
+      : [
+          ...new Set([
+            ...all.map((c) => c.floor),
+            ...(user?.grants.floors || []),
+          ]),
+        ].sort((a, b) => a - b),
     labs = (data?.labs || []).filter(
       (l) => floor === null || l.floor === floor,
     );
@@ -425,12 +450,37 @@ function App() {
       (c) => c.can_control && !pending.has(c.id),
     ),
     counts = (state: string) => scoped.filter((c) => c.status === state).length;
-  const navigate = (next: View) => {
+  const defaultFloor =
+    all[0]?.floor ?? data?.labs[0]?.floor ?? floors[0] ?? null;
+  const navigate = (
+    next: View,
+    selectedFloor: number | null = floor,
+    selectedLab?: string,
+  ) => {
     setView(next);
     setMenu(false);
     setSearch("");
     setStatus("all");
+    setHardwareFilter("all");
+    if (next === "overview") {
+      setFloor(null);
+      setLab("all");
+    }
+    if (next === "computers" || next === "inventory") {
+      const chosen = selectedFloor ?? defaultFloor;
+      setFloor(chosen);
+      setLab(
+        selectedLab ??
+          data?.labs.find((item) => item.floor === chosen)?.id ??
+          "all",
+      );
+    }
   };
+  const chooseFloor = (value: number | null) => {
+    setFloor(value);
+    setLab(data?.labs.find((item) => item.floor === value)?.id ?? "all");
+  };
+  const mismatches = scoped.filter((pc) => Boolean(pc.hardware_mismatch_since));
   if (!session || (!data && user))
     return (
       <div className="loading">
@@ -565,6 +615,7 @@ function App() {
               ["overview", LayoutDashboard, "Overview"],
               ["computers", Monitor, "Computers"],
               ["activity", Activity, "Activity"],
+              ["checks", Clock3, "Checks & history"],
             ] as const
           ).map(([key, Icon, title]) => (
             <button
@@ -599,8 +650,7 @@ function App() {
               key={f}
               className={floor === f ? "selected" : ""}
               onClick={() => {
-                setFloor(f);
-                navigate("computers");
+                navigate("computers", f);
               }}
             >
               <span className="floor-num">{String(f).padStart(2, "0")}</span>
@@ -645,7 +695,9 @@ function App() {
                   ? "Activity"
                   : view === "access"
                     ? "Users"
-                    : "Inventory"}
+                    : view === "checks"
+                      ? "Checks & history"
+                      : "Inventory"}
           </h1>
           <div className="heading-actions">
             <span className="last-update">
@@ -705,6 +757,26 @@ function App() {
             </button>
           </div>
         )}
+        {(view === "overview" || view === "computers") &&
+          mismatches.length > 0 && (
+            <div className="hardware-alert" role="alert">
+              <Cpu size={18} />
+              <span>{mismatches.length} hardware mismatches detected</span>
+              <button
+                className="text-button"
+                onClick={() => {
+                  navigate(
+                    "computers",
+                    mismatches[0].floor,
+                    mismatches[0].lab_id,
+                  );
+                  setHardwareFilter("mismatch");
+                }}
+              >
+                Review hardware
+              </button>
+            </div>
+          )}
         {(view === "overview" || view === "computers") && (
           <>
             <div className="stats">
@@ -720,7 +792,7 @@ function App() {
                 tone="green"
               />
               <Stat
-                label="UNREACHABLE"
+                label="NO RESPONSE"
                 value={counts("unreachable")}
                 icon={<Activity size={19} />}
                 tone="amber"
@@ -754,8 +826,7 @@ function App() {
                           key={f}
                           className="floor-card"
                           onClick={() => {
-                            setFloor(f);
-                            setView("computers");
+                            navigate("computers", f);
                           }}
                         >
                           <div className="floor-card-head">
@@ -765,11 +836,12 @@ function App() {
                             </span>
                             <ArrowUpRight size={17} />
                           </div>
-                          <div className="floor-bar">
-                            {pcs.map((c) => (
-                              <i key={c.id} className={c.status} />
-                            ))}
-                          </div>
+                          <progress
+                            className="floor-progress"
+                            value={online}
+                            max={Math.max(1, pcs.length)}
+                            aria-label={`Floor ${f}: ${online} of ${pcs.length} online`}
+                          />
                           <div className="floor-card-foot">
                             <span>
                               <b>{online}</b> / {pcs.length} online
@@ -777,297 +849,357 @@ function App() {
                             <span className={attention ? "attention-text" : ""}>
                               {attention
                                 ? `${attention} to check`
-                                : "All verified"}
+                                : pcs.length
+                                  ? "All verified"
+                                  : "No computers"}
                             </span>
                           </div>
+                          {pcs.some(
+                            (pc) => pc.hardware_state === "mismatch",
+                          ) && (
+                            <small className="attention-text">
+                              {
+                                pcs.filter(
+                                  (pc) => pc.hardware_state === "mismatch",
+                                ).length
+                              }{" "}
+                              hardware mismatches
+                            </small>
+                          )}
                         </button>
                       );
                     })}
                 </div>
               </section>
             )}
-            <section className="panel computer-panel">
-              <div className="panel-title">
-                <h2>
-                  {view === "overview" ? "Computers" : "Laboratory computers"}{" "}
-                  <span className="count-badge">{filtered.length}</span>
-                </h2>
-                <div className="status-legend">
-                  <span>
-                    <i className="green" />
-                    Online
-                  </span>
-                  <span>
-                    <i className="gray" />
-                    Unknown
-                  </span>
-                  <span>
-                    <i className="amber" />
-                    Attention
-                  </span>
-                </div>
-              </div>
-              <div className="filters">
-                <label className="search-field">
-                  <Search size={16} />
-                  <input
-                    aria-label="Search computers"
-                    placeholder="Search hostname, IP or lab…"
-                    value={search}
-                    onChange={(e) => {
-                      setSearch(e.target.value);
-                      setSelection([]);
-                    }}
-                  />
-                </label>
-                <label className="select-field">
-                  <Building2 size={15} />
-                  <select
-                    aria-label="Laboratory"
-                    value={lab}
-                    onChange={(e) => {
-                      setLab(e.target.value);
-                      setSelection([]);
-                    }}
-                  >
-                    <option value="all">All laboratories</option>
-                    {labs.map((l) => (
-                      <option key={l.id} value={l.id}>
-                        {l.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="select-field">
-                  <ListFilter size={15} />
-                  <select
-                    aria-label="Computer status"
-                    value={status}
-                    onChange={(e) => {
-                      setStatus(e.target.value);
-                      setSelection([]);
-                    }}
-                  >
-                    <option value="all">All statuses</option>
-                    {["online", "unreachable", "unknown"].map((s) => (
-                      <option key={s} value={s}>
-                        {labels[s]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              {selection.length > 0 && (
-                <div className="selection-bar">
-                  <span>
-                    <Check size={16} />
-                    {selection.length} selected
-                  </span>
-                  <div>
-                    {["wake", "restart", "shutdown"].map((a) => (
-                      <button
-                        key={a}
-                        onClick={() =>
-                          setConfirm({ action: a, ids: selection })
-                        }
-                      >
-                        {labels[a]}
-                      </button>
-                    ))}
-                    <button
-                      aria-label="Clear selection"
-                      onClick={() => setSelection([])}
-                    >
-                      <X size={15} />
-                    </button>
+            {view === "computers" && (
+              <section className="panel computer-panel">
+                <div className="panel-title">
+                  <h2>
+                    Laboratory computers{" "}
+                    <span className="count-badge">{filtered.length}</span>
+                  </h2>
+                  <div className="status-legend">
+                    <span>
+                      <i className="green" />
+                      Online
+                    </span>
+                    <span>
+                      <i className="gray" />
+                      Unknown
+                    </span>
+                    <span>
+                      <i className="amber" />
+                      Attention
+                    </span>
                   </div>
                 </div>
-              )}
-              <div className="table-wrap">
-                <table className="pc-table">
-                  <thead>
-                    <tr>
-                      <th className="check-cell">
-                        <input
-                          type="checkbox"
-                          aria-label="Select all visible computers"
-                          checked={
-                            controlled.length > 0 &&
-                            controlled.every((c) => selection.includes(c.id))
+                <div className="filters">
+                  <label className="select-field">
+                    <Building2 size={15} />
+                    <select
+                      aria-label="Floor"
+                      value={floor ?? ""}
+                      onChange={(e) =>
+                        chooseFloor(
+                          e.target.value ? Number(e.target.value) : null,
+                        )
+                      }
+                    >
+                      <option value="">All assigned floors</option>
+                      {floors.map((f) => (
+                        <option key={f} value={f}>
+                          Floor {f}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="search-field">
+                    <Search size={16} />
+                    <input
+                      aria-label="Search computers"
+                      placeholder="Search hostname, IP or lab…"
+                      value={search}
+                      onChange={(e) => {
+                        setSearch(e.target.value);
+                        setSelection([]);
+                      }}
+                    />
+                  </label>
+                  <label className="select-field">
+                    <Building2 size={15} />
+                    <select
+                      aria-label="Laboratory"
+                      value={lab}
+                      onChange={(e) => {
+                        setLab(e.target.value);
+                        setSelection([]);
+                      }}
+                    >
+                      <option value="all">All laboratories</option>
+                      {labs.map((l) => (
+                        <option key={l.id} value={l.id}>
+                          {l.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="select-field">
+                    <ListFilter size={15} />
+                    <select
+                      aria-label="Computer status"
+                      value={status}
+                      onChange={(e) => {
+                        setStatus(e.target.value);
+                        setSelection([]);
+                      }}
+                    >
+                      <option value="all">All statuses</option>
+                      {["online", "unreachable", "unknown"].map((s) => (
+                        <option key={s} value={s}>
+                          {labels[s]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="select-field">
+                    <Cpu size={15} />
+                    <select
+                      aria-label="Hardware status"
+                      value={hardwareFilter}
+                      onChange={(e) => setHardwareFilter(e.target.value)}
+                    >
+                      <option value="all">All hardware</option>
+                      <option value="match">Matches standard</option>
+                      <option value="mismatch">Hardware mismatch</option>
+                      <option value="unknown">Not verified</option>
+                      <option value="unconfigured">No standard</option>
+                    </select>
+                  </label>
+                </div>
+                {selection.length > 0 && (
+                  <div className="selection-bar">
+                    <span>
+                      <Check size={16} />
+                      {selection.length} selected
+                    </span>
+                    <div>
+                      {["wake", "restart", "shutdown"].map((a) => (
+                        <button
+                          key={a}
+                          onClick={() =>
+                            setConfirm({ action: a, ids: selection })
                           }
-                          disabled={!controlled.length}
-                          onChange={(e) =>
-                            setSelection(
-                              e.target.checked
-                                ? controlled.map((c) => c.id)
-                                : [],
-                            )
-                          }
-                        />
-                      </th>
-                      <th>COMPUTER</th>
-                      <th>LABORATORY</th>
-                      <th>IP ADDRESS</th>
-                      <th>STATUS</th>
-                      <th>CPU</th>
-                      <th>LAST CHECK</th>
-                      <th className="end">ACTIONS</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {displayed.map((c) => (
-                      <tr
-                        key={c.id}
-                        className={
-                          selection.includes(c.id) ? "selected-row" : ""
-                        }
+                        >
+                          {labels[a]}
+                        </button>
+                      ))}
+                      <button
+                        aria-label="Clear selection"
+                        onClick={() => setSelection([])}
                       >
-                        <td className="check-cell">
+                        <X size={15} />
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <div className="table-wrap">
+                  <table className="pc-table">
+                    <thead>
+                      <tr>
+                        <th className="check-cell">
                           <input
                             type="checkbox"
-                            aria-label={`Select ${c.id}`}
-                            checked={selection.includes(c.id)}
-                            disabled={!c.can_control || pending.has(c.id)}
+                            aria-label="Select all visible computers"
+                            checked={
+                              controlled.length > 0 &&
+                              controlled.every((c) => selection.includes(c.id))
+                            }
+                            disabled={!controlled.length}
                             onChange={(e) =>
-                              setSelection((s) =>
+                              setSelection(
                                 e.target.checked
-                                  ? [...s, c.id]
-                                  : s.filter((id) => id !== c.id),
+                                  ? controlled.map((c) => c.id)
+                                  : [],
                               )
                             }
                           />
-                        </td>
-                        <td>
-                          <button
-                            className="pc-name"
-                            onClick={() => setDetail(c)}
-                          >
-                            <span
-                              className={`pc-icon ${c.number === 100 ? "professor" : ""}`}
-                            >
-                              <Monitor size={17} />
-                            </span>
-                            <span>
-                              <strong>
-                                {c.number === 100
-                                  ? "Professor workstation"
-                                  : `Computer ${String(c.number).padStart(2, "0")}`}
-                              </strong>
-                              <small>{c.hostname || c.id}</small>
-                            </span>
-                          </button>
-                        </td>
-                        <td>
-                          <span className="lab-text">{c.lab_label}</span>
-                          <small>Floor {c.floor}</small>
-                        </td>
-                        <td className="mono">{c.ip}</td>
-                        <td>
-                          <span
-                            className={`status ${pending.has(c.id) ? "pending" : c.status}`}
-                          >
-                            <i />
-                            {pending.has(c.id)
-                              ? "Command pending"
-                              : labels[c.status]}
-                          </span>
-                        </td>
-                        <td>
-                          {c.status === "online" ? (
-                            <div className="health-cell">
-                              <Cpu size={13} />
-                              <span>{c.metrics.cpu ?? "—"}%</span>
-                              <span className="mini-meter">
-                                <i
-                                  className={`meter-fill w${Math.round((c.metrics.cpu || 0) / 10) * 10}`}
-                                />
-                              </span>
-                            </div>
-                          ) : (
-                            <span className="muted">—</span>
-                          )}
-                        </td>
-                        <td className="muted">{time(c.last_seen)}</td>
-                        <td className="end">
-                          <div className="row-actions">
-                            {c.can_control && (
-                              <button
-                                disabled={pending.has(c.id)}
-                                className="icon-button power-action"
-                                aria-label={`Power controls for ${c.id}`}
-                                onClick={() => setDetail(c)}
-                              >
-                                <Power size={16} />
-                              </button>
-                            )}
+                        </th>
+                        <th>COMPUTER</th>
+                        <th>LABORATORY</th>
+                        <th>IP ADDRESS</th>
+                        <th>STATUS</th>
+                        <th>HARDWARE</th>
+                        <th>CPU</th>
+                        <th>LAST CHECK</th>
+                        <th className="end">ACTIONS</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {displayed.map((c) => (
+                        <tr
+                          key={c.id}
+                          className={
+                            selection.includes(c.id) ? "selected-row" : ""
+                          }
+                        >
+                          <td className="check-cell">
+                            <input
+                              type="checkbox"
+                              aria-label={`Select ${c.id}`}
+                              checked={selection.includes(c.id)}
+                              disabled={!c.can_control || pending.has(c.id)}
+                              onChange={(e) =>
+                                setSelection((s) =>
+                                  e.target.checked
+                                    ? [...s, c.id]
+                                    : s.filter((id) => id !== c.id),
+                                )
+                              }
+                            />
+                          </td>
+                          <td>
                             <button
-                              className="icon-button"
-                              aria-label={`Details for ${c.id}`}
+                              className="pc-name"
                               onClick={() => setDetail(c)}
                             >
-                              <MoreHorizontal size={18} />
+                              <span
+                                className={`pc-icon ${c.number === 100 ? "professor" : ""}`}
+                              >
+                                <Monitor size={17} />
+                              </span>
+                              <span>
+                                <strong>
+                                  {c.number === 100
+                                    ? "Professor workstation"
+                                    : `Computer ${String(c.number).padStart(2, "0")}`}
+                                </strong>
+                                <small>{c.hostname || c.id}</small>
+                              </span>
                             </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {filtered.length === 0 && (
-                  <div className="empty">
-                    <Monitor size={26} />
-                    <h3>No computers found</h3>
-                    <p>
-                      {all.length
-                        ? "Adjust your filters."
-                        : admin
-                          ? "Add a laboratory to start."
-                          : "Ask support to assign your floor."}
-                    </p>
-                  </div>
-                )}
-              </div>
-              <div className="table-footer">
-                <span>
-                  {displayed.length} of {filtered.length} computers
-                </span>
-                {view === "overview" && (
-                  <button
-                    className="text-button"
-                    onClick={() => setView("computers")}
-                  >
-                    View all computers <ArrowUpRight size={14} />
-                  </button>
-                )}
-                {view === "computers" && filtered.length > 50 && (
-                  <div className="pagination">
-                    <button
-                      className="secondary small"
-                      disabled={page === 0}
-                      onClick={() => {
-                        setPage(page - 1);
-                        setSelection([]);
-                      }}
-                    >
-                      Previous
-                    </button>
-                    <span>
-                      Page {page + 1} of {Math.ceil(filtered.length / 50)}
-                    </span>
-                    <button
-                      className="secondary small"
-                      disabled={(page + 1) * 50 >= filtered.length}
-                      onClick={() => {
-                        setPage(page + 1);
-                        setSelection([]);
-                      }}
-                    >
-                      Next
-                    </button>
-                  </div>
-                )}
-              </div>
-            </section>
+                          </td>
+                          <td>
+                            <span className="lab-text">{c.lab_label}</span>
+                            <small>Floor {c.floor}</small>
+                          </td>
+                          <td className="mono">{c.ip}</td>
+                          <td>
+                            <span
+                              className={`status ${pending.has(c.id) ? "pending" : c.status}`}
+                            >
+                              <i />
+                              {pending.has(c.id)
+                                ? "Command pending"
+                                : labels[c.status]}
+                            </span>
+                          </td>
+                          <td>
+                            <span
+                              className={`status ${c.hardware_state === "mismatch" ? "unreachable" : c.hardware_state === "match" ? "online" : "unknown"}`}
+                            >
+                              {c.hardware_state === "match"
+                                ? "Matches"
+                                : c.hardware_state === "mismatch"
+                                  ? "Mismatch"
+                                  : c.hardware_state === "unconfigured"
+                                    ? "No standard"
+                                    : "Not verified"}
+                            </span>
+                            {c.hardware_mismatch_since && (
+                              <small>
+                                Since {date(c.hardware_mismatch_since)}
+                              </small>
+                            )}
+                          </td>
+                          <td>
+                            {c.status === "online" ? (
+                              <div className="health-cell">
+                                <Cpu size={13} />
+                                <span>{c.metrics.cpu ?? "—"}%</span>
+                                <span className="mini-meter">
+                                  <i
+                                    className={`meter-fill w${Math.round((c.metrics.cpu || 0) / 10) * 10}`}
+                                  />
+                                </span>
+                              </div>
+                            ) : (
+                              <span className="muted">—</span>
+                            )}
+                          </td>
+                          <td className="muted">{time(c.last_seen)}</td>
+                          <td className="end">
+                            <div className="row-actions">
+                              {c.can_control && (
+                                <button
+                                  disabled={pending.has(c.id)}
+                                  className="icon-button power-action"
+                                  aria-label={`Power controls for ${c.id}`}
+                                  onClick={() => setDetail(c)}
+                                >
+                                  <Power size={16} />
+                                </button>
+                              )}
+                              <button
+                                className="icon-button"
+                                aria-label={`Details for ${c.id}`}
+                                onClick={() => setDetail(c)}
+                              >
+                                <MoreHorizontal size={18} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {filtered.length === 0 && (
+                    <div className="empty">
+                      <Monitor size={26} />
+                      <h3>No computers found</h3>
+                      <p>
+                        {all.length
+                          ? "Adjust your filters."
+                          : admin
+                            ? "Add a laboratory to start."
+                            : "Ask support to assign your floor."}
+                      </p>
+                    </div>
+                  )}
+                </div>
+                <div className="table-footer">
+                  <span>
+                    {displayed.length} of {filtered.length} computers
+                  </span>
+                  {view === "computers" && filtered.length > 50 && (
+                    <div className="pagination">
+                      <button
+                        className="secondary small"
+                        disabled={page === 0}
+                        onClick={() => {
+                          setPage(page - 1);
+                          setSelection([]);
+                        }}
+                      >
+                        Previous
+                      </button>
+                      <span>
+                        Page {page + 1} of {Math.ceil(filtered.length / 50)}
+                      </span>
+                      <button
+                        className="secondary small"
+                        disabled={(page + 1) * 50 >= filtered.length}
+                        onClick={() => {
+                          setPage(page + 1);
+                          setSelection([]);
+                        }}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </section>
+            )}
             {view === "overview" && (
               <section className="panel">
                 <div className="panel-title">
@@ -1201,6 +1333,22 @@ function App() {
               <h2>Registered laboratories</h2>
               <span>{data?.labs.length} laboratories</span>
             </div>
+            <div className="filters">
+              <label className="select-field">
+                <Building2 size={15} />
+                <select
+                  aria-label="Inventory floor"
+                  value={floor ?? defaultFloor ?? ""}
+                  onChange={(e) => chooseFloor(Number(e.target.value))}
+                >
+                  {floors.map((f) => (
+                    <option key={f} value={f}>
+                      Floor {f}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
             <div className="table-wrap">
               <table>
                 <thead>
@@ -1210,37 +1358,51 @@ function App() {
                     <th>SUBNET</th>
                     <th>COMPUTERS</th>
                     <th>WAKE-ON-LAN</th>
+                    <th>HARDWARE STANDARD</th>
                     <th />
                   </tr>
                 </thead>
                 <tbody>
-                  {data?.labs.map((l) => (
-                    <tr key={l.id}>
-                      <td>
-                        <strong>{l.label}</strong>
-                        <small>{l.id}</small>
-                      </td>
-                      <td>Floor {l.floor}</td>
-                      <td className="mono">{l.subnet}</td>
-                      <td>{all.filter((c) => c.lab_id === l.id).length}</td>
-                      <td>
-                        {all.filter((c) => c.lab_id === l.id && c.mac).length}{" "}
-                        MAC addresses
-                      </td>
-                      <td className="end">
-                        <button
-                          className="text-button"
-                          onClick={() => {
-                            setView("computers");
-                            setFloor(l.floor);
-                            setTimeout(() => setLab(l.id), 0);
-                          }}
-                        >
-                          Manage <ArrowUpRight size={14} />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {data?.labs
+                    .filter((l) => floor === null || l.floor === floor)
+                    .map((l) => (
+                      <tr key={l.id}>
+                        <td>
+                          <strong>{l.label}</strong>
+                          <small>{l.id}</small>
+                        </td>
+                        <td>Floor {l.floor}</td>
+                        <td className="mono">{l.subnet}</td>
+                        <td>{all.filter((c) => c.lab_id === l.id).length}</td>
+                        <td>
+                          {all.filter((c) => c.lab_id === l.id && c.mac).length}{" "}
+                          MAC addresses
+                        </td>
+                        <td>
+                          <button
+                            className="secondary small"
+                            onClick={() => {
+                              setError("");
+                              setStandardLab(l);
+                            }}
+                          >
+                            {l.hardware_standard?.enabled
+                              ? "Edit standard"
+                              : "Set standard"}
+                          </button>
+                        </td>
+                        <td className="end">
+                          <button
+                            className="text-button"
+                            onClick={() => {
+                              navigate("computers", l.floor, l.id);
+                            }}
+                          >
+                            Manage <ArrowUpRight size={14} />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
                 </tbody>
               </table>
               {!data?.labs.length && (
@@ -1248,6 +1410,15 @@ function App() {
               )}
             </div>
           </section>
+        )}
+        {view === "checks" && (
+          <ChecksPanel
+            api={api}
+            floors={floors}
+            initialFloor={floor ?? defaultFloor}
+            canRun={user.role !== "viewer"}
+            onError={setError}
+          />
         )}
         <footer className="main-footer">
           <span>FIAP SWITCH</span>
@@ -1269,6 +1440,38 @@ function App() {
           <Check size={17} />
           {notice}
         </div>
+      )}
+      {standardLab && (
+        <Modal
+          title={`Hardware standard · ${standardLab.label}`}
+          close={() => setStandardLab(null)}
+          error={error}
+          wide
+        >
+          <HardwareStandardForm
+            standard={standardLab.hardware_standard}
+            sample={
+              all.find(
+                (pc) => pc.lab_id === standardLab.id && pc.hardware_checked_at,
+              )?.hardware
+            }
+            close={() => setStandardLab(null)}
+            save={async (value) => {
+              try {
+                await api(
+                  `/api/labs/${standardLab.id}/hardware-standard`,
+                  "PUT",
+                  value,
+                );
+                await load();
+                setStandardLab(null);
+                setNotice("Hardware standard saved.");
+              } catch (e) {
+                setError((e as Error).message);
+              }
+            }}
+          />
+        </Modal>
       )}
       {confirm && (
         <Modal
@@ -1356,6 +1559,53 @@ function App() {
               </dd>
             </div>
           </dl>
+          <dl className="details">
+            <div>
+              <dt>CPU MODEL</dt>
+              <dd>{detail.hardware?.cpu_model || "—"}</dd>
+            </div>
+            <div>
+              <dt>LOGICAL CPUS / RAM</dt>
+              <dd>
+                {detail.hardware?.logical_cpus ?? "—"} /{" "}
+                {detail.hardware?.memory_gib ?? "—"} GiB
+              </dd>
+            </div>
+            <div>
+              <dt>STORAGE / DISKS</dt>
+              <dd>
+                {detail.hardware?.storage_gib ?? "—"} GiB /{" "}
+                {detail.hardware?.disk_count ?? "—"}
+              </dd>
+            </div>
+            <div>
+              <dt>GPU</dt>
+              <dd>{detail.hardware?.gpu_models?.join(", ") || "—"}</dd>
+            </div>
+            <div>
+              <dt>HARDWARE VERIFIED</dt>
+              <dd>
+                {detail.hardware_checked_at
+                  ? date(detail.hardware_checked_at)
+                  : "—"}
+              </dd>
+            </div>
+            <div>
+              <dt>MISMATCH DETECTED</dt>
+              <dd>
+                {detail.hardware_mismatch_since
+                  ? date(detail.hardware_mismatch_since)
+                  : "—"}
+              </dd>
+            </div>
+          </dl>
+          {detail.hardware_differences?.length > 0 && (
+            <div className="issue-note">
+              {detail.hardware_differences.map((item) => (
+                <div key={item}>{item.replaceAll("_", " ")}</div>
+              ))}
+            </div>
+          )}
           {detail.issue && <div className="issue-note">{detail.issue}</div>}
           {admin && (
             <form onSubmit={savePC}>

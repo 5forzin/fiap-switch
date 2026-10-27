@@ -22,6 +22,8 @@ from backend.config import Settings, get_settings
 from backend.db import FLOORS, allowed, connect, initialize, inventory, user_public
 from backend.models import ActionInput, ComputerInput, JobResult, LabInput, Reports, PasswordChange, PasswordLogin, UserInput
 from backend.passwords import hash_password, needs_rehash, verify_password
+from backend.checks import record_observation, register_checks
+from backend.hardware import register_hardware, update_hardware
 
 
 def digest(value):
@@ -49,6 +51,7 @@ def create_app(settings: Settings | None = None):
                                (time.time(), 'Collector lease expired. Execution outcome is unknown; verify before retrying.', job['id']))
                     audit(db, 'system', 'lease_expired', job['id'], job['computer_id'])
                 db.execute("UPDATE jobs SET state='failed',finished=?,message='Command expired before delivery.' WHERE state='queued' AND created<?", (time.time(), time.time()-300))
+                db.execute("UPDATE checks SET state='failed',finished=?,message='The controller did not finish this verification within 15 minutes.' WHERE state='queued' AND created<?", (time.time(),time.time()-900))
 
     @asynccontextmanager
     async def lifespan(app):
@@ -251,6 +254,8 @@ def create_app(settings: Settings | None = None):
                 if allowed(user, row):
                     item = dict(row)
                     item['metrics'] = json.loads(item['metrics'])
+                    item['hardware'] = json.loads(item['hardware'])
+                    item['hardware_differences'] = json.loads(item['hardware_differences'])
                     item['stale'] = not item['last_seen'] or time.time()-item['last_seen'] > cfg.stale_seconds
                     if item['stale']:
                         item['status'] = 'unknown'
@@ -259,6 +264,9 @@ def create_app(settings: Settings | None = None):
                     computers.append(item)
             lab_ids = {c['lab_id'] for c in computers}
             labs = [dict(l) for l in db.execute('SELECT * FROM labs ORDER BY floor,number') if user['role'] == 'admin' or l['id'] in lab_ids]
+            standards = {r['lab_id']: json.loads(r['settings']) for r in db.execute('SELECT * FROM hardware_standards')}
+            for lab in labs:
+                lab['hardware_standard'] = standards.get(lab['id'])
             visible = {c['id'] for c in computers}
             jobs = [dict(j) for j in db.execute('SELECT j.*,c.hostname,c.lab_id FROM jobs j JOIN computers c ON c.id=j.computer_id ORDER BY j.created DESC LIMIT 1000') if j['computer_id'] in visible][:100]
             collectors = [dict(c) for c in db.execute('SELECT * FROM collectors')] if user['role'] == 'admin' else []
@@ -395,8 +403,14 @@ def create_app(settings: Settings | None = None):
             if any(r.computer_id not in valid for r in payload.reports):
                 raise HTTPException(403, 'Computer is not assigned to this collector.')
             for r in payload.reports:
+                now = time.time()
                 db.execute('UPDATE computers SET status=?,metrics=?,last_seen=?,issue=?,mac=CASE WHEN mac=\'\' AND ? != \'\' THEN ? ELSE mac END WHERE id=?',
-                           (r.status, json.dumps(r.metrics), time.time(), r.issue, r.mac, r.mac, r.computer_id))
+                           (r.status, json.dumps(r.metrics), now, r.issue, r.mac, r.mac, r.computer_id))
+                computer = db.execute('SELECT c.*,l.floor FROM computers c JOIN labs l ON l.id=c.lab_id WHERE c.id=?',(r.computer_id,)).fetchone()
+                if r.status=='online' and r.hardware is not None:
+                    update_hardware(db,computer,r.hardware.model_dump(exclude_none=True),now)
+                    computer = db.execute('SELECT c.*,l.floor FROM computers c JOIN labs l ON l.id=c.lab_id WHERE c.id=?',(r.computer_id,)).fetchone()
+                record_observation(db,computer,r,now)
             db.execute('UPDATE collectors SET last_seen=? WHERE id=?', (time.time(), cid))
         return {'ok': True}
 
@@ -434,6 +448,9 @@ def create_app(settings: Settings | None = None):
             db.execute('UPDATE jobs SET state=?,message=?,finished=? WHERE id=?', (payload.state, payload.message, time.time(), jid))
             audit(db, cid, payload.state, row['action'], row['computer_id'], payload.message)
         return {'ok': True}
+
+    register_checks(app,cfg,current_user,collector)
+    register_hardware(app,cfg,current_user,admin)
 
     root = Path(cfg.frontend_path)
     if (root / 'brand').exists():

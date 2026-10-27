@@ -1,7 +1,7 @@
 import re
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from backend.db import FLOORS
 
@@ -95,12 +95,63 @@ class ActionInput(BaseModel):
     computer_ids: list[str] = Field(min_length=1, max_length=250)
 
 
+class Hardware(BaseModel):
+    cpu_model: str | None = Field(default=None, max_length=200)
+    logical_cpus: int | None = Field(default=None, ge=1, le=4096)
+    memory_gib: float | None = Field(default=None, ge=0, le=65536, allow_inf_nan=False)
+    storage_gib: float | None = Field(default=None, ge=0, le=1000000, allow_inf_nan=False)
+    disk_count: int | None = Field(default=None, ge=0, le=100)
+    gpu_models: list[str] | None = Field(default=None, max_length=16)
+
+    @field_validator('gpu_models')
+    @classmethod
+    def gpu_names(cls, value):
+        if value and any(len(name) > 200 for name in value):
+            raise ValueError('GPU model name is too long.')
+        return value
+
+
+class HardwareStandard(BaseModel):
+    enabled: bool = True
+    match_mode: Literal['exact', 'minimum'] = 'exact'
+    cpu_model: str | None = Field(default=None, max_length=200)
+    logical_cpus: int | None = Field(default=None, ge=1, le=4096)
+    memory_gib: float | None = Field(default=None, ge=0.5, le=65536, allow_inf_nan=False)
+    storage_gib: float | None = Field(default=None, ge=1, le=1000000, allow_inf_nan=False)
+    disk_count: int | None = Field(default=None, ge=1, le=100)
+    gpu_model: str | None = Field(default=None, max_length=200)
+
+    @field_validator('cpu_model','gpu_model')
+    @classmethod
+    def nonblank_models(cls, value):
+        return value.strip() or None if value is not None else None
+
+    @model_validator(mode='after')
+    def configured(self):
+        if self.enabled and not any(getattr(self, key) is not None and getattr(self, key) != '' for key in ('cpu_model','logical_cpus','memory_gib','storage_gib','disk_count','gpu_model')):
+            raise ValueError('Configure at least one hardware requirement.')
+        return self
+
+
+class CheckInput(BaseModel):
+    floor: int | None = None
+    lab_id: str | None = Field(default=None, max_length=100)
+
+    @field_validator('floor')
+    @classmethod
+    def valid_floor(cls, value):
+        if value is not None and value not in FLOORS:
+            raise ValueError('Unsupported floor.')
+        return value
+
+
 class Report(BaseModel):
     computer_id: str
     status: Literal['online', 'unreachable', 'unknown']
     metrics: dict = Field(default_factory=dict)
     mac: str = ''
     issue: str = Field(default='', max_length=250)
+    hardware: Hardware | None = None
 
     @field_validator('metrics')
     @classmethod

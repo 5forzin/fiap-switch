@@ -76,7 +76,52 @@ def initialize(settings):
             CREATE INDEX IF NOT EXISTS login_attempts_created ON login_attempts(created);
             CREATE INDEX IF NOT EXISTS jobs_queue ON jobs(state,created);
             CREATE INDEX IF NOT EXISTS audit_created ON audit(created);
+            CREATE TABLE IF NOT EXISTS checks (
+                id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, created REAL NOT NULL,
+                finished REAL, state TEXT NOT NULL DEFAULT 'queued', message TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS check_results (
+                check_id TEXT NOT NULL REFERENCES checks(id), computer_id TEXT NOT NULL,
+                floor INTEGER NOT NULL, lab_id TEXT NOT NULL, hostname TEXT NOT NULL,
+                ip TEXT NOT NULL, number INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'unknown',
+                checked_at REAL, last_online REAL, issue TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(check_id,computer_id)
+            );
+            CREATE TABLE IF NOT EXISTS daily_status (
+                day TEXT NOT NULL, computer_id TEXT NOT NULL, floor INTEGER NOT NULL,
+                lab_id TEXT NOT NULL, hostname TEXT NOT NULL, ip TEXT NOT NULL, number INTEGER NOT NULL,
+                status TEXT NOT NULL, first_check REAL NOT NULL, checked_at REAL NOT NULL,
+                last_online REAL, online_checks INTEGER NOT NULL DEFAULT 0, total_checks INTEGER NOT NULL DEFAULT 1,
+                issue TEXT NOT NULL DEFAULT '', PRIMARY KEY(day,computer_id)
+            );
+            CREATE INDEX IF NOT EXISTS checks_created ON checks(created);
+            CREATE INDEX IF NOT EXISTS check_results_pending ON check_results(computer_id,checked_at);
+            CREATE INDEX IF NOT EXISTS daily_status_day ON daily_status(day,floor);
+            CREATE INDEX IF NOT EXISTS daily_status_computer ON daily_status(computer_id,last_online);
+            CREATE TABLE IF NOT EXISTS hardware_standards (
+                lab_id TEXT PRIMARY KEY REFERENCES labs(id), settings TEXT NOT NULL,
+                updated REAL NOT NULL, updated_by TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS hardware_events (
+                id TEXT PRIMARY KEY, computer_id TEXT NOT NULL, lab_id TEXT NOT NULL, floor INTEGER NOT NULL,
+                detected REAL NOT NULL, last_seen REAL NOT NULL, resolved REAL,
+                expected TEXT NOT NULL, actual TEXT NOT NULL, differences TEXT NOT NULL,
+                resolution TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS hardware_events_computer ON hardware_events(computer_id,resolved);
+            CREATE UNIQUE INDEX IF NOT EXISTS hardware_events_open ON hardware_events(computer_id) WHERE resolved IS NULL;
         ''')
+        additions = {
+            'computers': {'hardware': "TEXT NOT NULL DEFAULT '{}'", 'hardware_state': "TEXT NOT NULL DEFAULT 'unconfigured'",
+                'hardware_checked_at': 'REAL', 'hardware_differences': "TEXT NOT NULL DEFAULT '[]'", 'hardware_mismatch_since': 'REAL'},
+            'check_results': {'hardware': "TEXT NOT NULL DEFAULT '{}'", 'hardware_state': "TEXT NOT NULL DEFAULT 'unknown'", 'hardware_differences': "TEXT NOT NULL DEFAULT '[]'"},
+            'daily_status': {'hardware': "TEXT NOT NULL DEFAULT '{}'", 'hardware_state': "TEXT NOT NULL DEFAULT 'unknown'", 'hardware_differences': "TEXT NOT NULL DEFAULT '[]'"},
+        }
+        for table, fields in additions.items():
+            existing = {row['name'] for row in db.execute(f'PRAGMA table_info({table})')}
+            for name, definition in fields.items():
+                if name not in existing:
+                    db.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
         if 'username' not in {r['name'] for r in db.execute('PRAGMA table_info(login_attempts)')}:
             db.execute("ALTER TABLE login_attempts ADD COLUMN username TEXT NOT NULL DEFAULT ''")
         mode = db.execute("SELECT value FROM metadata WHERE key='mode'").fetchone()
