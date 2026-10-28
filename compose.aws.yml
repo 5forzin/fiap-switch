@@ -1,0 +1,57 @@
+services:
+  web:
+    command: ["uvicorn", "backend.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "172.30.0.2"]
+    networks:
+      default:
+        ipv4_address: 172.30.0.3
+  proxy:
+    image: caddy:2-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
+    restart: unless-stopped
+    user: "1000:1000"
+    environment:
+      SITE_HOST: ${SITE_HOST:?Defina SITE_HOST com o domínio HTTPS}
+    ports:
+      - "80:8080"
+      - "443:8443"
+    volumes:
+      - ./infra/Caddyfile.aws:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      - web
+    networks:
+      default:
+        ipv4_address: 172.30.0.2
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+volumes:
+  switch-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/fiap-switch/data
+  caddy-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/fiap-switch/caddy-data
+  caddy-config:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/fiap-switch/caddy-config

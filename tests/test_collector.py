@@ -10,7 +10,7 @@ from collector.service import Controller
 def controller(monkeypatch):
     for key, value in {'SWITCH_URL': 'https://switch.example.com', 'COLLECTOR_TOKEN': 'test-token', 'WINRM_USERNAME': 'FIAP\\svc-switch', 'WINRM_PASSWORD': 'test-password'}.items():
         monkeypatch.setenv(key, value)
-    return Controller()
+    return Controller(client=MagicMock())
 
 
 def test_wake_packet_and_lan_boundary(controller):

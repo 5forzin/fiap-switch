@@ -8,10 +8,9 @@ import time
 import threading
 from urllib.parse import urlparse
 
-import httpx
 import winrm
 from dotenv import load_dotenv
-from collector.power import execute_cloud
+from collector.identity import paired_client
 
 load_dotenv(os.getenv('COLLECTOR_ENV', '.env.collector'))
 log = logging.getLogger('collector')
@@ -51,7 +50,7 @@ POWER_SCRIPTS = {
 
 
 class Controller:
-    def __init__(self):
+    def __init__(self, client=None):
         self.base_url = os.environ['SWITCH_URL'].rstrip('/')
         if urlparse(self.base_url).scheme != 'https':
             raise ValueError('A comunicação do controlador exige HTTPS.')
@@ -72,8 +71,12 @@ class Controller:
         self.interval = max(15, int(os.getenv('PROBE_INTERVAL', '60')))
         self.connect_timeout = min(10, max(0.5, float(os.getenv('TCP_CONNECT_TIMEOUT', '2'))))
         self.check_requested = threading.Event()
-        self.client = httpx.Client(base_url=self.base_url, timeout=20,
-            headers={'Authorization': f"Bearer {os.environ['COLLECTOR_TOKEN']}"}, follow_redirects=False)
+        if client is not None:
+            self.client = client
+        elif os.getenv('COLLECTOR_ENROLLMENT') and os.getenv('COLLECTOR_DEVICE_FILE'):
+            self.client = paired_client(self.base_url, os.environ['COLLECTOR_ENROLLMENT'], os.environ['COLLECTOR_DEVICE_FILE'])
+        else:
+            raise ValueError('Instale o pacote assinado e aprove este controlador no painel.')
 
     def target(self, computer):
         ip = ipaddress.ip_address(computer['ip'])
@@ -128,11 +131,8 @@ class Controller:
 
     def execute(self, job):
         mode = job.get('power', {}).get('mode', 'fiap')
-        if mode in ('aws', 'azure'):
-            self.target(job)
-            return execute_cloud(job)
         if mode != 'fiap':
-            raise ValueError('Modo de operação inválido.')
+            raise ValueError('O controlador de produção aceita somente WinRM e Wake-on-LAN.')
         if job['action'] == 'wake':
             return self.wake(job)
         if job['action'] not in POWER_SCRIPTS:

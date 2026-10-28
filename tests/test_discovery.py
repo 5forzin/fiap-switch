@@ -125,7 +125,7 @@ def test_descoberta_invalida_e_conflito_nao_sobrescrevem_inventario(client):
 def controller(monkeypatch):
     for key, value in {'SWITCH_URL': 'https://switch.example.com', 'COLLECTOR_TOKEN': 'test-token', 'WINRM_USERNAME': 'svc', 'WINRM_PASSWORD': 'test-password'}.items():
         monkeypatch.setenv(key, value)
-    return Controller()
+    return Controller(client=MagicMock())
 
 
 def test_controlador_varre_somente_ips_novos_e_cadastra_so_winrm_autenticado(controller):

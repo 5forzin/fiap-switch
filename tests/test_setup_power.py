@@ -11,7 +11,7 @@ from backend.app import create_app
 from backend.config import Settings
 from backend.db import connect, initialize
 from backend.passwords import verify_password
-from collector.power import execute_cloud
+from backend.power import execute_cloud
 from collector.service import Controller
 from scripts.setup import configure
 
@@ -31,8 +31,9 @@ def test_setup_cria_admin_automatico_sem_resetar_e_preserva_dolares_no_hash(tmp_
     assert saved['BOOTSTRAP_ADMIN_PASSWORD_HASH'] == values['BOOTSTRAP_ADMIN_PASSWORD_HASH']
     assert verify_password(password, saved['BOOTSTRAP_ADMIN_PASSWORD_HASH'])
     assert password not in (tmp_path / '.env').read_text()
-    assert dotenv_values('.env.collector')['COLLECTOR_TOKEN'] == saved['COLLECTOR_TOKEN']
+    assert not (tmp_path / '.env.collector').exists()
     cfg = Settings()
+    cfg.cloud_worker_enabled = False
     assert cfg.power_mode == mode
     with TestClient(create_app(cfg), base_url=cfg.base_url, headers={'Origin': cfg.base_url}) as client:
         assert client.post('/auth/login', json={'username': args.admin_email, 'password': password}).status_code == 200
@@ -87,13 +88,15 @@ def test_azure_resolve_nic_pelo_ip_e_aciona_api_do_grupo(action_name, operation)
     requests = []
     def handle(request):
         requests.append(request)
+        if request.method == 'GET' and '/virtualMachines/' in request.url.path:
+            return httpx.Response(200, json={'tags': {'FIAPSwitchManaged': 'true'}})
         if request.method == 'GET':
             return httpx.Response(200, json={'value': [{'properties': {'virtualMachine': {'id': vm}, 'ipConfigurations': [{'properties': {'privateIPAddress': '10.3.22.4'}}]}}]})
         return httpx.Response(202)
     credential = MagicMock()
     credential.get_token.return_value.token = 'token-de-teste'
     original = httpx.Client
-    with patch('azure.identity.DefaultAzureCredential', return_value=credential), patch('collector.power.httpx.Client', side_effect=lambda **kw: original(transport=httpx.MockTransport(handle), **kw)):
+    with patch('azure.identity.DefaultAzureCredential', return_value=credential), patch('backend.power.httpx.Client', side_effect=lambda **kw: original(transport=httpx.MockTransport(handle), **kw)):
         assert 'Azure' in execute_cloud({'power': AZURE, 'ip': '10.3.22.4', 'action': action_name})
     assert requests[-1].method == 'POST' and requests[-1].url.path == vm + '/' + operation
     assert requests[-1].url.params['api-version'] == '2025-04-01'
@@ -107,15 +110,15 @@ def test_azure_nao_transmite_token_para_paginacao_externa():
         requests.append(request)
         return httpx.Response(200, json={'value': [], 'nextLink': 'https://outro.example/roubar-token'})
     original = httpx.Client
-    with patch('azure.identity.DefaultAzureCredential'), patch('collector.power.httpx.Client', side_effect=lambda **kw: original(transport=httpx.MockTransport(handle), **kw)), pytest.raises(ValueError):
+    with patch('azure.identity.DefaultAzureCredential'), patch('backend.power.httpx.Client', side_effect=lambda **kw: original(transport=httpx.MockTransport(handle), **kw)), pytest.raises(ValueError):
         execute_cloud({'power': AZURE, 'ip': '10.3.22.4', 'action': 'wake'})
     assert len(requests) == 1 and requests[0].url.host == 'management.azure.com'
 
 
-def test_controlador_nunca_recai_em_wol_quando_api_falha(monkeypatch):
+def test_controlador_de_producao_rejeita_comandos_de_nuvem(monkeypatch):
     for key, value in {'SWITCH_URL': 'https://switch.example.com', 'COLLECTOR_TOKEN': 'test-token', 'WINRM_USERNAME': 'svc', 'WINRM_PASSWORD': 'test-password'}.items():
         monkeypatch.setenv(key, value)
-    controller = Controller()
-    with patch('collector.service.execute_cloud', side_effect=RuntimeError), patch.object(controller, 'wake') as wake, patch.object(controller, 'session') as winrm, pytest.raises(RuntimeError):
+    controller = Controller(client=MagicMock())
+    with patch.object(controller, 'wake') as wake, patch.object(controller, 'session') as winrm, pytest.raises(ValueError):
         controller.execute({'power': AWS, 'ip': '10.3.22.4', 'action': 'wake'})
     assert not wake.called and not winrm.called

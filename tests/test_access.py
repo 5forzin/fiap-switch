@@ -113,6 +113,11 @@ def production(tmp_path, encoded_password):
                    collector_token='test-collector-token-that-is-long-enough',
                    session_secret='test-session-secret-that-is-long-enough', database_path=str(tmp_path/'production.db'))
     app = create_app(cfg)
+    @app.middleware('http')
+    async def internal_collector_fixture(request, call_next):
+        if request.headers.get('Authorization') == f'Bearer {cfg.collector_token}':
+            request.scope['fiap_internal_collector'] = True
+        return await call_next(request)
     with TestClient(app, base_url=cfg.base_url) as client:
         with connect(cfg.database_path) as db:
             db.execute("INSERT INTO users(id,email,name,role) VALUES ('test-admin','test@fiap.com.br','Admin','admin')")

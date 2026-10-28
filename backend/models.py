@@ -156,6 +156,7 @@ class CheckInput(BaseModel):
 
 
 class Observation(BaseModel):
+    source: Literal['winrm', 'aws', 'azure'] = 'winrm'
     status: Literal['online', 'unreachable', 'unknown']
     metrics: dict = Field(default_factory=dict)
     mac: str = ''

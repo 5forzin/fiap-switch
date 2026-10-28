@@ -28,6 +28,7 @@ import "./style.css";
 import { ChecksPanel } from "./ChecksPanel";
 import { HardwareStandardForm } from "./HardwareStandardForm";
 import { LabQuantityForm, QuantityFields } from "./LabQuantityForm";
+import { ControllersPanel } from "./ControllersPanel";
 import type { Hardware, HardwareStandard } from "./inventory";
 import { quantidade } from "./inventory";
 
@@ -66,6 +67,7 @@ type PC = {
   hardware_checked_at: number | null;
   hardware_mismatch_since: number | null;
   hardware_differences: string[];
+  hardware_source?: "winrm" | "aws" | "azure";
   metrics: {
     cpu?: number;
     memory?: number;
@@ -101,6 +103,7 @@ type Dashboard = {
   jobs: Job[];
   collectors: { id: string; last_seen: number | null }[];
   updated_at: number;
+  controller_requests?: number;
 };
 type Audit = {
   id: number;
@@ -112,7 +115,13 @@ type Audit = {
   detail: string;
 };
 type View =
-  "overview" | "computers" | "activity" | "access" | "inventory" | "checks";
+  | "overview"
+  | "computers"
+  | "activity"
+  | "access"
+  | "inventory"
+  | "checks"
+  | "controllers";
 const labels: Record<string, string> = {
   online: "Ligado",
   offline: "Desligado",
@@ -710,6 +719,15 @@ function App() {
             <div className="nav-section">ADMINISTRAÇÃO</div>
             {admin && (
               <button
+                className={`nav-item ${view === "controllers" ? "active" : ""}`}
+                onClick={() => navigate("controllers")}
+              >
+                <Server size={18} />
+                Controladores
+              </button>
+            )}
+            {admin && (
+              <button
                 className={`nav-item ${view === "access" ? "active" : ""}`}
                 onClick={() => navigate("access")}
               >
@@ -743,7 +761,9 @@ function App() {
                     ? "Usuários"
                     : view === "checks"
                       ? "Verificações e histórico"
-                      : "Inventário"}
+                      : view === "controllers"
+                        ? "Controladores"
+                        : "Inventário"}
           </h1>
           <div className="heading-actions">
             <span className="last-update">
@@ -800,6 +820,24 @@ function App() {
               onClick={() => setError("")}
             >
               <X size={16} />
+            </button>
+          </div>
+        )}
+        {admin && !!data?.controller_requests && view !== "controllers" && (
+          <div className="hardware-alert" role="alert">
+            <Server size={18} />
+            <span>
+              {quantidade(
+                data.controller_requests,
+                "servidor aguardando aprovação",
+                "servidores aguardando aprovação",
+              )}
+            </span>
+            <button
+              className="text-button"
+              onClick={() => navigate("controllers")}
+            >
+              Ver solicitações
             </button>
           </div>
         )}
@@ -1502,12 +1540,21 @@ function App() {
             onError={setError}
           />
         )}
+        {view === "controllers" && admin && (
+          <ControllersPanel
+            api={api}
+            csrf={user?.csrf || ""}
+            onError={setError}
+          />
+        )}
         <footer className="main-footer">
           <span>FIAP SWITCH</span>
           {gestor && (
             <span className="controller-status">
               <Server size={13} />
-              Controlador{" "}
+              {session.power_mode === "fiap"
+                ? "Controlador"
+                : "Processamento interno"}{" "}
               {data?.collectors.some(
                 (c) => c.last_seen && Date.now() / 1000 - c.last_seen < 120,
               )
@@ -1725,6 +1772,16 @@ function App() {
                 {detail.hardware_checked_at
                   ? date(detail.hardware_checked_at)
                   : "—"}
+              </dd>
+            </div>
+            <div>
+              <dt>FONTE DO INVENTÁRIO</dt>
+              <dd>
+                {detail.hardware_source === "aws"
+                  ? "Configuração da VM na AWS"
+                  : detail.hardware_source === "azure"
+                    ? "Configuração da VM no Azure"
+                    : "WinRM no computador"}
               </dd>
             </div>
             <div>

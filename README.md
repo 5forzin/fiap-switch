@@ -8,7 +8,7 @@
 
 [![Validação](https://github.com/5forzin/fiap-switch/actions/workflows/ci.yml/badge.svg)](https://github.com/5forzin/fiap-switch/actions/workflows/ci.yml)
 
-[Painel](https://fiap-switch.13.140.191.31.sslip.io/) · [Telas](#o-painel) · [Arquitetura](#como-funciona) · [Instalação](#executar-localmente) · [Operação](docs/operations.md)
+[Painel](https://fiap-switch.18.223.245.218.sslip.io/) · [Telas](#o-painel) · [Arquitetura](#como-funciona) · [Instalação](#executar-localmente) · [Operação](docs/operations.md) · [Segurança](SECURITY.md)
 
 </div>
 
@@ -16,7 +16,7 @@
 
 O FIAP Switch centraliza o trabalho dos monitores: consultar os computadores do andar, conferir o hardware e enviar comandos de energia. O suporte acompanha todo o prédio; o administrador gerencia as contas e define o andar de cada monitor.
 
-O controlador roda em Windows ou Linux, com acesso à rede dos computadores. Na FIAP, energia usa WinRM e Wake-on-LAN. Nos modos AWS e Azure, energia usa as APIs do provedor. Estado e hardware continuam usando o WinRM nativo do Windows, sem agente nos computadores.
+Em **AWS ou Azure**, o site consulta o estado e a configuração das máquinas e executa os comandos pelas APIs do provedor, sem controlador externo. Em **FIAP produção**, um programa assinado para Windows ou Linux conecta o servidor da LAN ao site por HTTPS. Esse servidor usa WinRM e Wake-on-LAN, sem instalar agentes nos computadores dos laboratórios.
 
 ## O painel
 
@@ -37,7 +37,7 @@ Cada sala tem seu próprio padrão de CPU, RAM, armazenamento, quantidade de dis
 </tr>
 <tr>
 <td align="center">Padrão configurável por laboratório</td>
-<td align="center">Leitura real obtida pelo WinRM</td>
+<td align="center">Divergência de hardware com data</td>
 </tr>
 </table>
 
@@ -45,7 +45,7 @@ Para configurar uma sala, abra **Inventário → andar → Configurar sala**. Na
 
 ![Clonagem a partir de um computador conforme da própria sala](docs/imagens/clonagem.jpg)
 
-Na aba **Computadores**, a quantidade pode ficar **Indefinida**. Ao verificar o andar, o controlador procura novos computadores de `.1` a `.99` e o professor em `.100`, somente na sub-rede da sala. Cadastra apenas alvos que respondem ao WinRM autenticado, já com hardware e histórico. Repetir o scan preserva o inventário e não duplica IPs ou números de computador. Máquinas desligadas que nunca foram cadastradas serão descobertas quando estiverem acessíveis.
+Na aba **Computadores**, a quantidade pode ficar **Indefinida**. Ao verificar o andar, a descoberta procura alunos de `.1` a `.99` e o professor em `.100`, somente na sub-rede da sala. Na FIAP, cadastra apenas computadores que respondem ao WinRM autenticado; em nuvem, VMs ligadas e autorizadas pelo provedor. Novos registros já entram na comparação de hardware e no histórico. Repetir o scan preserva o inventário e não duplica IPs ou números de computador. Máquinas desligadas que nunca foram cadastradas serão descobertas quando estiverem acessíveis.
 
 Definir o total depois preserva os equipamentos cadastrados e adiciona os que faltam. A verificação aguarda o término da descoberta antes de salvar o resultado completo.
 
@@ -53,6 +53,7 @@ Definir o total depois preserva os equipamentos cadastrados e adiciona os que fa
 <summary>Ver quantidade indefinida e inventário detectado</summary>
 
 ![Quantidade indefinida por sala](docs/imagens/quantidade.jpg)
+![Descoberta de um computador real sem cadastro prévio](docs/imagens/descoberta.jpg)
 ![Inventário real obtido pelo WinRM](docs/imagens/hardware.jpg)
 
 </details>
@@ -76,7 +77,7 @@ As permissões são verificadas no servidor. Alterações de andar ou perfil enc
 <table>
 <tr>
 <td width="50%"><img src="docs/imagens/acessos.jpg" alt="Administração dos usuários e seus andares" /></td>
-<td width="50%"><img src="docs/imagens/monitor.jpg" alt="Conta de monitor com acesso somente ao terceiro andar" /></td>
+<td width="50%"><img src="docs/imagens/monitor.jpg" alt="Conta de monitor com acesso somente ao segundo andar" /></td>
 </tr>
 <tr>
 <td align="center">Administração de acessos</td>
@@ -91,15 +92,14 @@ As capturas mostram leituras reais de um laboratório Windows na AWS. Os IPs des
 ```mermaid
 flowchart LR
     U[Administrador, suporte ou monitor] -->|HTTPS| W[Aplicação web]
-    C[Controlador no servidor da FIAP] -->|Consulta a fila por HTTPS| W
     W --> D[(Inventário e histórico)]
-    C -->|WinRM: consultar, reiniciar e desligar| S[Switches da rede local]
-    C -->|Wake-on-LAN: ligar| S
-    C -->|Modos AWS e Azure: API de energia| N[Provedor de nuvem]
-    S --> P[Computadores dos laboratórios]
+    W -->|Modo AWS ou Azure: APIs autenticadas| N[Máquinas virtuais autorizadas]
+    C[Servidor Windows ou Linux da FIAP] -->|Modo FIAP: HTTPS assinado e aprovação do admin| W
+    C -->|WinRM: consultar, reiniciar e desligar| P[Computadores dos laboratórios]
+    C -->|Wake-on-LAN: ligar| P
 ```
 
-O site pode ficar hospedado fora do campus. O controlador faz conexões de saída por HTTPS e executa apenas os comandos fixos permitidos. A rede da FIAP não precisa receber conexões da internet.
+O site pode ficar hospedado fora do campus. Em FIAP produção, o controlador faz conexões de saída por HTTPS e executa apenas os comandos fixos permitidos. A rede da FIAP não precisa receber conexões da internet. O site não recebe a senha WinRM do domínio.
 
 | Ação                        | Execução                                               |
 | --------------------------- | ------------------------------------------------------ |
@@ -107,7 +107,17 @@ O site pode ficar hospedado fora do campus. O controlador faz conexões de saíd
 | Reiniciar ou desligar       | WinRM com aviso de 60 segundos para salvar o trabalho. |
 | Ligar                       | Pacote Wake-on-LAN para o MAC cadastrado.              |
 
-Essa tabela descreve o modo **FIAP produção**. Em **AWS**, ligar, desligar e reiniciar usam `StartInstances`, `StopInstances` e `RebootInstances`. Em **Azure**, usam `start`, `deallocate` e `restart`. Não há fallback de uma API de nuvem para Wake-on-LAN ou comandos WinRM de energia. O controlador encontra a VM pelo IP privado dentro da VPC ou do grupo de recursos configurado; correspondências ambíguas são recusadas.
+Essa tabela descreve o modo **FIAP produção**. Em **AWS**, ligar, desligar e reiniciar usam `StartInstances`, `StopInstances` e `RebootInstances`. Em **Azure**, usam `start`, `deallocate` e `restart`. O próprio site encontra a VM pelo IP privado dentro da VPC ou do grupo de recursos configurado, exigindo a tag `FIAPSwitchManaged=true`. Correspondências ambíguas são recusadas.
+
+**O inventário em nuvem mostra a configuração da VM**, incluindo CPUs, RAM provisionada e discos anexados. Estado `running` não comprova a saúde do Windows. Uso de CPU, RAM e disponibilidade do WinRM são leituras do modo FIAP, não métricas inventadas a partir das APIs de nuvem.
+
+### Aprovação do servidor da FIAP
+
+Em **Controladores**, o administrador baixa o pacote para Windows ou Linux. O convite é individual, expira em 30 minutos e só pode ser usado uma vez. O instalador valida a assinatura Ed25519 e os arquivos do pacote. O servidor gera sua própria chave e aguarda a aprovação.
+
+O painel mostra nome, sistema, IP de origem, endereços locais e impressão digital. Após comparar a impressão digital com o servidor, o administrador aprova a conexão. Revogar bloqueia novas consultas, resultados e comandos. Cada requisição tem assinatura, horário e nonce para impedir repetição.
+
+![Pareamento real com servidor Linux aguardando aprovação e Windows aprovado](docs/imagens/controlador-pendente.jpg)
 
 **Wake-on-LAN depende da rede e do equipamento.** BIOS/UEFI e placa de rede precisam permitir o ligamento remoto. Entre VLANs, pode ser necessário encaminhar broadcast ou usar um retransmissor autorizado. Acesso por IP atende ao WinRM, mas não garante a passagem do pacote de Wake-on-LAN.
 
@@ -123,8 +133,8 @@ O terceiro octeto junta o número do andar com o número da sala dentro daquele 
 
 ### O que cada situação significa
 
-- **Ligado:** o WinRM respondeu a uma consulta válida.
-- **Sem resposta:** a consulta falhou; a causa pode ser energia, rede ou WinRM.
+- **Ligado:** o WinRM respondeu na FIAP; em nuvem, a API confirmou a VM em execução.
+- **Sem resposta:** na FIAP, a consulta falhou; em nuvem, a VM não está em execução.
 - **Não verificado:** não há leitura atual ou o controlador está sem comunicação.
 
 Um comando enviado não comprova que a máquina já mudou de estado. A confirmação vem da próxima leitura. Hardware sem leitura atual aparece como não verificado, preservando o último inventário e as divergências abertas.
@@ -156,9 +166,9 @@ sh setup.sh --mode aws --aws-region us-east-2 --aws-vpc-id vpc-0123456789abcdef0
 sh setup.sh --mode azure --azure-subscription-id SEU_UUID --azure-resource-group fiap-labs
 ```
 
-Os exemplos representam instalações alternativas. Credenciais de nuvem ficam no **controlador**, usando perfil IAM, identidade gerenciada ou login de desenvolvimento pelo SDK. Nenhuma chave de nuvem é enviada ao navegador ou gravada pelo instalador. O site pode estar em Linux independentemente do modo escolhido.
+Os exemplos representam instalações alternativas. Credenciais de nuvem pertencem ao **site**, usando perfil IAM, identidade gerenciada ou login de desenvolvimento pelo SDK. Nenhuma chave de nuvem é enviada ao navegador ou gravada pelo instalador. O site pode estar em Linux independentemente do modo escolhido.
 
-O instalador também gera `.env.collector` com a URL e o token corretos. Transfira esse arquivo de forma privada ao servidor da LAN, preencha a conta WinRM e a autoridade certificadora e execute o controlador. Use `--no-start` para gerar os arquivos e iniciar a aplicação manualmente.
+AWS e Azure funcionam sem programa adicional. Em FIAP produção, entre com o administrador inicial e abra **Controladores** para gerar o pacote do servidor da LAN. Use `--no-start` para gerar a configuração do site e iniciá-lo manualmente.
 
 ### Instalação manual
 
@@ -186,15 +196,21 @@ Defina a senha quando o terminal solicitar. Abra [localhost:8000](http://localho
 
 ### Controlador da LAN
 
-No servidor que alcança os computadores da FIAP:
+Baixe e extraia o pacote em **Controladores**. Copie a impressão digital mostrada no painel. No servidor Windows, com **Python 3.12+ instalado para todos os usuários**, execute como administrador:
 
 ```powershell
-Copy-Item collector/.env.example .env.collector
-# Preencha o arquivo com a URL, token e conta de serviço autorizada.
-.venv\Scripts\python -m collector.service
+.\instalar.ps1 -Fingerprint IMPRESSAO_DO_PAINEL
 ```
 
-Use uma conta de serviço do domínio com os direitos necessários. O padrão é WinRM HTTPS na porta `5986`, autenticação NTLM, mensagens criptografadas e validação do certificado. Kerberos também é suportado. Consulte o [guia de operação](docs/operations.md) para certificados, tarefa de inicialização e implantação com Docker.
+No Linux, com Python 3.12+ e suporte a `venv`:
+
+```sh
+sudo sh instalar.sh --fingerprint IMPRESSAO_DO_PAINEL
+```
+
+O instalador solicita a conta WinRM e a senha oculta. Para execução sem perguntas, informe `--config /caminho/privado.env --ca /caminho/ca.pem` no Linux, ou `-Config` e `-Ca` no Windows. O serviço roda com usuário próprio no Linux e Local Service no Windows. Aprove a solicitação na conta de administrador.
+
+Use uma conta de serviço do domínio com os direitos necessários. O padrão é WinRM HTTPS na porta `5986`, NTLM, mensagens criptografadas e validação do certificado. Kerberos também é suportado. Consulte o [guia de operação](docs/operations.md) para certificados, permissões e backup.
 
 ## Autenticação e segurança
 
@@ -202,6 +218,8 @@ Use uma conta de serviço do domínio com os direitos necessários. O padrão é
 - Senhas com hash scrypt; não há cadastro público nem credenciais fixas.
 - Cookies seguros, sessão de oito horas, proteção CSRF e limite de tentativas de entrada.
 - Fila persistente com idempotência, expiração e autorização antes da execução.
+- Pacotes assinados, convite de uso único, aprovação e revogação pelo administrador.
+- Identidade própria do controlador e assinatura de cada requisição, com proteção contra repetição.
 - Validação dos IPs, nomes e broadcasts permitidos pelo controlador.
 - SSO Microsoft Entra opcional, sujeito ao cadastro da aplicação pela TI da FIAP.
 
@@ -212,7 +230,7 @@ Use uma conta de serviço do domínio com os direitos necessários. O padrão é
 
 </details>
 
-Arquivos de ambiente, chaves, bancos e credenciais ficam fora do Git. Nunca publique o conteúdo de `runtime/`.
+Arquivos de ambiente, chaves, bancos e credenciais ficam fora do Git. Nunca publique o conteúdo de `runtime/`. Nenhum software oferece segurança de 100%; os controles e os limites para revisão pela TI estão em [SECURITY.md](SECURITY.md).
 
 ## Validação
 
@@ -221,11 +239,13 @@ Arquivos de ambiente, chaves, bancos e credenciais ficam fora do Git. Nunca publ
 npm run build --prefix frontend
 ```
 
-A suíte possui **81 testes automatizados**. A validação de **27/10/2026** utilizou um controlador Windows Server 2022 e dois alvos Windows reais, em redes de laboratório diferentes. Foram confirmados telemetria, restrição por andar, reinicialização com mudança do horário de inicialização, desligamento efetivo, expiração da fila, persistência, histórico diário e divergências de hardware. A interface também foi exercitada com **1.188 computadores em uma base isolada**.
+A suíte possui **90 testes automatizados**. A validação de **27/10/2026** utilizou três alvos Windows Server 2022 reais, um controlador Windows e um servidor Linux temporário. Foram confirmados descoberta sem duplicação, restrição por andar, comandos reais, histórico, divergências de hardware, aprovação dos controladores e operação autossuficiente do site na AWS. A interface também foi exercitada com **1.188 computadores em uma base isolada**.
 
-Os três pacotes reais de Wake-on-LAN foram recebidos no controlador e comparados com o MAC do alvo. **A AWS não oferece broadcast em VPC nem ligamento de EC2 desligada por Wake-on-LAN**; o teste de ligar fisicamente depende da LAN do campus. [Limitação documentada pela AWS](https://docs.aws.amazon.com/vpc/latest/userguide/subnet-sizing.html).
+O monitor do 2º andar desligou e ligou uma EC2 pelo painel no modo AWS. Os três pacotes de Wake-on-LAN do modo FIAP foram recebidos e comparados com o MAC do alvo. O ligamento físico por Wake-on-LAN depende da LAN do campus, porque [VPC não oferece broadcast](https://docs.aws.amazon.com/vpc/latest/userguide/subnet-sizing.html).
 
-Para a apresentação, o computador `301-4` recebeu um disco EBS real de **8 GiB**: o WinRM detecta **38 GiB e dois discos**, enquanto o padrão continua em **30 GiB e um disco**. A máquina do laboratório 202 permanece conforme. Os três Windows ficam ligados.
+Para a apresentação, `301-4` e `202-4` receberam um disco EBS real de **8 GiB** cada: **38 GiB e dois discos**, enquanto o padrão continua em **30 GiB e um disco**. O professor `202-100` permanece conforme. As máquinas de apresentação ficam ligadas.
+
+![Monitor do segundo andar com divergência real de hardware](docs/imagens/monitor-hardware.jpg)
 
 [Evidências das verificações](docs/validation-2026-10-27.json) · [Operação, contas e infraestrutura](docs/operations.md)
 

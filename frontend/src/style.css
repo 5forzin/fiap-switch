@@ -1381,6 +1381,54 @@ td small {
   font-size: 12px;
   line-height: 1.6;
 }
+.controller-downloads {
+  padding: 22px;
+  border-bottom: 1px solid #ddd;
+}
+.controller-downloads button + button {
+  margin-left: 12px;
+}
+.controller-downloads p {
+  margin: 16px 0 0;
+  color: #666;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.controller-downloads details {
+  margin-top: 18px;
+}
+.controller-list {
+  display: grid;
+  gap: 18px;
+  padding: 22px;
+}
+.controller-card {
+  border: 1px solid #ddd;
+  padding: 20px;
+}
+.controller-card.pending {
+  border-left: 3px solid var(--pink);
+}
+.controller-card h3 {
+  margin: 0 0 8px;
+}
+.controller-card p {
+  margin: 14px 0;
+  font-size: 13px;
+}
+.controller-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 18px;
+}
+.fingerprint {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.8;
+  color: #666;
+  margin-top: 16px;
+}
 .modal-body .quantity-fields > label,
 .modal-body .quantity-fields > .checkbox-label {
   margin: 0;

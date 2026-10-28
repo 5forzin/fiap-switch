@@ -1,0 +1,4 @@
+httpx==0.28.1
+pywinrm==0.5.0
+python-dotenv==1.2.4
+cryptography==50.0.2

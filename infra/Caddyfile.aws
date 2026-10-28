@@ -1,0 +1,22 @@
+{
+    admin off
+    http_port 8080
+    https_port 8443
+    auto_https disable_redirects
+}
+
+http://{$SITE_HOST}:8080 {
+    redir https://{$SITE_HOST}{uri} permanent
+}
+
+https://{$SITE_HOST}:8443 {
+    encode zstd gzip
+    request_body {
+        max_size 1MB
+    }
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        -Server
+    }
+    reverse_proxy web:8000
+}

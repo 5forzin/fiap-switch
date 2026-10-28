@@ -150,6 +150,7 @@ def save_observation(db, report, now):
     computer = db.execute('SELECT c.*,l.floor FROM computers c JOIN labs l ON l.id=c.lab_id WHERE c.id=?', (report.computer_id,)).fetchone()
     if report.status == 'online' and report.hardware is not None:
         update_hardware(db, computer, report.hardware.model_dump(exclude_none=True), now)
+        db.execute('UPDATE computers SET hardware_source=? WHERE id=?', (report.source, report.computer_id))
     else:
         db.execute("UPDATE computers SET hardware_state=CASE WHEN hardware_state='unconfigured' THEN 'unconfigured' ELSE 'unknown' END WHERE id=?", (report.computer_id,))
     computer = db.execute('SELECT c.*,l.floor FROM computers c JOIN labs l ON l.id=c.lab_id WHERE c.id=?', (report.computer_id,)).fetchone()

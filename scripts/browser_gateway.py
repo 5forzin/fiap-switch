@@ -3,9 +3,11 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
+import os
 
-UPSTREAM = "https://fiap-switch.13.140.191.31.sslip.io"
-LOCAL = "http://localhost:8011"
+UPSTREAM = os.getenv('SWITCH_BROWSER_URL', "https://fiap-switch.13.140.191.31.sslip.io")
+PORT = int(os.getenv('SWITCH_BROWSER_PORT', '8011'))
+LOCAL = os.getenv('SWITCH_BROWSER_ORIGIN', f'http://localhost:{PORT}')
 client = httpx.Client(base_url=UPSTREAM, proxy="socks5://127.0.0.1:1080", timeout=30)
 
 
@@ -50,5 +52,5 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print("Acesso local ao painel: http://localhost:8011", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", 8011), Handler).serve_forever()
+    print(f"Acesso local ao painel: {LOCAL}", flush=True)
+    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

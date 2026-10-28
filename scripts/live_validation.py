@@ -17,6 +17,7 @@ URL = "https://fiap-switch.13.140.191.31.sslip.io"
 class Validation:
     def __init__(self):
         self.state = json.loads(STATE.read_text())
+        self.url = self.state.get('web_url', URL)
         session = boto3.Session(
             profile_name="fiap-switch", region_name=self.state["region"]
         )
@@ -39,9 +40,9 @@ class Validation:
     @contextmanager
     def client(self, account=None):
         api = httpx.Client(
-            base_url=URL,
+            base_url=self.url,
             proxy="socks5://127.0.0.1:1080",
-            headers={"Origin": URL},
+            headers={"Origin": self.url},
             timeout=30,
         )
         try:

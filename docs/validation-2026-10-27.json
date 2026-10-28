@@ -1,6 +1,6 @@
 {
   "date": "2026-10-27",
-  "environment": "Aplicação publicada por HTTPS, controlador Windows Server 2022 e dois alvos WinRM HTTPS em uma VPC isolada na AWS.",
+  "environment": "Site autossuficiente hospedado na AWS e três alvos Windows Server 2022. Controladores de produção Windows e Linux validados separadamente por pareamento e WinRM HTTPS.",
   "results": {
     "inventory_all_floors_addressing_and_unknown_state": {
       "passed": true,
@@ -265,7 +265,7 @@
         "received_udp_datagrams": 3,
         "payload_bytes": 102,
         "magic_packet_payload_matches_target_mac": true,
-        "limit": "A EC2 não oferece Wake-on-LAN por broadcast; o ligamento físico exige validação no campus."
+        "limit": "A EC2 nÃ£o oferece Wake-on-LAN por broadcast; o ligamento fÃ­sico exige validaÃ§Ã£o no campus."
       }
     },
     "live_unresponsive_hardware_is_unverified_and_prior_inventory_preserved": {
@@ -306,14 +306,50 @@
           "i-031c50f97a111b9e0": "stopped",
           "i-0e38330c8d82e6b92": "stopped"
         },
-        "storage": "Volumes EBS criptografados mantidos com as instâncias desligadas para reutilização."
+        "storage": "Volumes EBS criptografados mantidos com as instÃ¢ncias desligadas para reutilizaÃ§Ã£o."
       }
+    },
+    "monitor2_descoberta_real_sem_cadastro_previo": {
+      "passed": true,
+      "verified_at": 1793148749.31832
+    },
+    "monitor2_scan_repetido_sem_duplicar": {
+      "passed": true,
+      "verified_at": 1793148758.443137
+    },
+    "monitor2_desligamento_real_api_aws": {
+      "passed": true,
+      "verified_at": 1793148815.3723178
+    },
+    "monitor2_ligamento_real_api_aws": {
+      "passed": true,
+      "verified_at": 1793148908.206056
+    },
+    "monitor2_alteracao_real_de_hardware": {
+      "passed": true,
+      "verified_at": 1793148966.8946364
+    },
+    "instalador_linux_com_admin_automatico": {
+      "passed": true,
+      "verified_at": 1793148694.339402
+    },
+    "ligamento_real_monitor2_executor_interno_aws": {
+      "passed": true,
+      "verified_at": 1793155279.3462844
+    },
+    "instalador_windows_final_sem_ajustes": {
+      "passed": true,
+      "verified_at": 1793155272.2225723
+    },
+    "instalador_linux_final_sem_ajustes": {
+      "passed": true,
+      "verified_at": 1793155349.8291333
     }
   },
   "limitations": [
-    "O Wake-on-LAN físico exige validação na LAN do campus, pois a VPC da AWS não oferece broadcast.",
-    "O SSO Microsoft Entra exige o cadastro da aplicação no diretório FIAP; as contas locais com senha foram testadas.",
-    "A mudança diária de data foi validada por testes automatizados, sem alterar os relógios reais."
+    "O Wake-on-LAN fÃ­sico exige validaÃ§Ã£o na LAN do campus, pois a VPC da AWS nÃ£o oferece broadcast.",
+    "O SSO Microsoft Entra exige o cadastro da aplicaÃ§Ã£o no diretÃ³rio FIAP; as contas locais com senha foram testadas.",
+    "A mudanÃ§a diÃ¡ria de data foi validada por testes automatizados, sem alterar os relÃ³gios reais."
   ],
   "published_features": {
     "perfis_e_privacidade_publicados": {
@@ -347,17 +383,25 @@
     }
   },
   "presentation": {
-    "windows_instances_running": 3,
-    "changed_computer": "301-4",
-    "actual_storage_gib": 38,
-    "actual_disk_count": 2,
+    "computers": [
+      "301-4",
+      "202-4",
+      "202-100"
+    ],
+    "changed_hardware": [
+      "301-4",
+      "202-4"
+    ],
     "expected_storage_gib": 30,
-    "expected_disk_count": 1,
-    "healthy_computer": "202-100",
-    "wake_on_lan": {
-      "packets_received": 3,
-      "bytes_per_packet": 102,
-      "physical_power_on_in_aws": false
-    }
+    "actual_storage_gib": 38,
+    "monitor_floor": 2,
+    "leave_windows_running": true
+  },
+  "automated_tests": 90,
+  "dependency_audit": {
+    "date": "2026-10-27",
+    "python_packages": 46,
+    "python_known_vulnerabilities": 0,
+    "npm_production_known_vulnerabilities": 0
   }
 }

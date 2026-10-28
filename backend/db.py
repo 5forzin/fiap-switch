@@ -104,6 +104,17 @@ def initialize(settings):
                 state TEXT NOT NULL DEFAULT 'queued', added INTEGER NOT NULL DEFAULT 0,
                 finished REAL, message TEXT NOT NULL DEFAULT '', PRIMARY KEY(check_id,lab_id)
             );
+            CREATE TABLE IF NOT EXISTS controller_devices (
+                id TEXT PRIMARY KEY, platform TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'issued',
+                enrollment_hash TEXT NOT NULL, expires REAL NOT NULL, public_key TEXT NOT NULL DEFAULT '',
+                hostname TEXT NOT NULL DEFAULT '', source_ip TEXT NOT NULL DEFAULT '', local_ips TEXT NOT NULL DEFAULT '[]',
+                created REAL NOT NULL, last_seen REAL, approved_by TEXT, collector_id TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS controller_nonces (
+                device_id TEXT NOT NULL REFERENCES controller_devices(id), nonce TEXT NOT NULL,
+                created REAL NOT NULL, PRIMARY KEY(device_id,nonce)
+            );
+            CREATE TABLE IF NOT EXISTS enrollment_attempts (ip TEXT NOT NULL, created REAL NOT NULL);
             CREATE INDEX IF NOT EXISTS check_results_pending ON check_results(computer_id,checked_at);
             CREATE INDEX IF NOT EXISTS daily_status_day ON daily_status(day,floor);
             CREATE INDEX IF NOT EXISTS daily_status_computer ON daily_status(computer_id,last_online);
@@ -148,6 +159,7 @@ def initialize(settings):
             'checks': {'actor_role': "TEXT NOT NULL DEFAULT ''"},
             'audit': {'initiator_id': "TEXT NOT NULL DEFAULT ''", 'actor_role': "TEXT NOT NULL DEFAULT ''"},
             'computers': {'hardware': "TEXT NOT NULL DEFAULT '{}'", 'hardware_state': "TEXT NOT NULL DEFAULT 'unconfigured'",
+                'hardware_source': "TEXT NOT NULL DEFAULT 'winrm'",
                 'hardware_checked_at': 'REAL', 'hardware_differences': "TEXT NOT NULL DEFAULT '[]'", 'hardware_mismatch_since': 'REAL'},
             'check_results': {'hardware': "TEXT NOT NULL DEFAULT '{}'", 'hardware_state': "TEXT NOT NULL DEFAULT 'unknown'", 'hardware_differences': "TEXT NOT NULL DEFAULT '[]'"},
             'daily_status': {'hardware': "TEXT NOT NULL DEFAULT '{}'", 'hardware_state': "TEXT NOT NULL DEFAULT 'unknown'", 'hardware_differences': "TEXT NOT NULL DEFAULT '[]'"},

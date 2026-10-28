@@ -1,11 +1,11 @@
 fastapi==0.143.0
 uvicorn==0.54.0
-Authlib==1.8.0
+Authlib==1.9.1
 httpx==0.28.1
 itsdangerous==2.2.0
 pydantic-settings==2.15.0
-pywinrm==0.5.0
 python-dotenv==1.2.4
 tzdata==2026.5
 boto3[crt]==1.43.112
 azure-identity==1.27.0
+cryptography==50.0.2

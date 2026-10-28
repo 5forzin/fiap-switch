@@ -23,9 +23,16 @@ def client(tmp_path, encoded_password):
         base_url="https://testserver",
         session_secret="test-session-secret-that-is-long-enough",
         collector_token="test-collector-token-that-is-long-enough",
+        cloud_worker_enabled=False,
         database_path=str(tmp_path / "switch.db"),
     )
-    with TestClient(create_app(cfg), base_url=cfg.base_url) as c:
+    app = create_app(cfg)
+    @app.middleware('http')
+    async def internal_collector_fixture(request, call_next):
+        if request.headers.get('Authorization') == f'Bearer {cfg.collector_token}':
+            request.scope['fiap_internal_collector'] = True
+        return await call_next(request)
+    with TestClient(app, base_url=cfg.base_url) as c:
         with connect(cfg.database_path) as db:
             for role in ("admin", "support", "monitor", "viewer"):
                 db.execute(

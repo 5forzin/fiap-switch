@@ -63,6 +63,7 @@ def register_discovery(app, cfg, collector):
                 db.execute('''INSERT OR IGNORE INTO check_results(check_id,computer_id,floor,lab_id,hostname,ip,number)
                     VALUES (?,?,?,?,?,?,?)''', (check_id, computer_id, task['floor'], lab_id, existing[0]['hostname'] if existing else '', ip, found.number))
                 report = Report(computer_id=computer_id, **found.model_dump(exclude={'number'}))
+                report.source = 'winrm' if cfg.power_mode == 'fiap' else cfg.power_mode
                 save_observation(db, report, now)
             db.execute("UPDATE check_discovery SET state='completed',added=?,finished=? WHERE check_id=? AND lab_id=?",
                        (added, now, check_id, lab_id))

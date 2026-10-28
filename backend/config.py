@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     environment: Literal['production', 'development'] = 'production'
     auth_mode: Literal['local', 'entra'] = 'local'
     power_mode: Literal['fiap', 'aws', 'azure'] = 'fiap'
+    cloud_worker_enabled: bool = True
     aws_region: str = 'us-east-2'
     aws_vpc_id: str = ''
     azure_subscription_id: str = ''

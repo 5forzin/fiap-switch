@@ -51,15 +51,6 @@ def configure(args, folder=Path('.')):
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, 'w', encoding='utf-8', newline='\n') as output:
         output.write(''.join(f"{key}='" + value.replace("'", "\\'") + "'\n" for key, value in values.items()))
-    collector_path = folder / '.env.collector'
-    if not collector_path.exists():
-        collector_values = {'SWITCH_URL': values['BASE_URL'], 'COLLECTOR_TOKEN': values['COLLECTOR_TOKEN'],
-                            'WINRM_USERNAME': os.getenv('WINRM_USERNAME', r'FIAP\svc-switch'), 'WINRM_PASSWORD': os.getenv('WINRM_PASSWORD', ''),
-                            'WINRM_TRANSPORT': 'ntlm', 'WINRM_SCHEME': 'https', 'WINRM_PORT': '5986',
-                            'WINRM_CA_BUNDLE': '', 'ALLOWED_CIDRS': '10.3.0.0/16'}
-        descriptor = os.open(collector_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, 'w', encoding='utf-8', newline='\n') as output:
-            output.write(''.join(f"{key}='" + value.replace("'", "\\'") + "'\n" for key, value in collector_values.items()))
     return values, password
 
 
@@ -84,7 +75,8 @@ def main():
     if password:
         print(f"\nAcesso inicial: {values['BASE_URL']}\nE-mail: {values['BOOTSTRAP_ADMIN_EMAIL']}\nSenha: {password}\n")
         print('Guarde a senha. Ela não será exibida novamente. Altere os dados da conta após entrar.')
-        print('O arquivo .env.collector está pronto para o servidor da LAN; preencha a conta WinRM autorizada e o certificado.')
+        if values['POWER_MODE'] == 'fiap':
+            print('Em Controladores, gere o pacote do servidor Windows ou Linux e aprove sua conexão.')
     if not args.no_start:
         if not shutil.which('docker'):
             raise SystemExit('Instale Docker com Compose e execute o instalador novamente. A configuração já foi salva.')

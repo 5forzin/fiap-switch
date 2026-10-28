@@ -24,6 +24,7 @@ from backend.models import ActionInput, ComputerInput, JobResult, LabInput, LabQ
 from backend.passwords import hash_password, needs_rehash, verify_password
 from backend.checks import register_checks, save_observation
 from backend.discovery import register_discovery
+from backend.controllers import register_controllers, verify_device
 from backend.hardware import register_hardware
 from backend.audit import activity_clause, audit
 
@@ -54,7 +55,17 @@ def create_app(settings: Settings | None = None):
     async def lifespan(app):
         initialize(cfg)
         task = asyncio.create_task(maintenance())
+        cloud_task = None
+        if cfg.power_mode in ('aws', 'azure') and cfg.cloud_worker_enabled:
+            from backend.cloud_worker import run_cloud
+            cloud_task = asyncio.create_task(run_cloud(app, cfg))
         yield
+        if cloud_task:
+            cloud_task.cancel()
+            try:
+                await cloud_task
+            except asyncio.CancelledError:
+                pass
         task.cancel()
         try:
             await task
@@ -74,7 +85,7 @@ def create_app(settings: Settings | None = None):
 
     @app.middleware('http')
     async def security(request, call_next):
-        if request.method in ('POST', 'PUT', 'DELETE', 'PATCH') and not request.url.path.startswith('/api/collector/'):
+        if request.method in ('POST', 'PUT', 'DELETE', 'PATCH') and not (request.url.path.startswith('/api/collector/') or request.url.path == '/api/enrollment'):
             if request.headers.get('origin') != cfg.base_url:
                 return JSONResponse({'detail': 'Origem da solicitação inválida.'}, status_code=403)
         response = await call_next(request)
@@ -135,11 +146,12 @@ def create_app(settings: Settings | None = None):
             raise HTTPException(403, 'Acesso de administrador ou suporte necessário.')
         return user
 
-    def collector(request: Request):
+    async def collector(request: Request):
         supplied = request.headers.get('authorization', '')
-        if not secrets.compare_digest(supplied, f'Bearer {cfg.collector_token}'):
-            raise HTTPException(401, 'Credenciais do controlador inválidas.')
-        return cfg.collector_id
+        if request.scope.get('fiap_internal_collector') and secrets.compare_digest(supplied, f'Bearer {cfg.collector_token}'):
+            return cfg.collector_id
+        device = await verify_device(request, cfg)
+        return device['collector_id']
 
     def persist_session(db, request, user_id):
         sid, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
@@ -293,7 +305,8 @@ def create_app(settings: Settings | None = None):
             placeholders = ','.join('?' for _ in visible)
             jobs = [dict(j) for j in db.execute(f'SELECT j.*,c.hostname,c.lab_id,u.name AS actor_name FROM jobs j JOIN computers c ON c.id=j.computer_id JOIN users u ON u.id=j.actor_id WHERE {privacy} AND j.computer_id IN ({placeholders}) ORDER BY j.created DESC LIMIT 100', [*privacy_values, *visible])] if visible else []
             collectors = [dict(c) for c in db.execute('SELECT * FROM collectors')] if user['role'] in ('admin', 'support') else []
-        return {'computers': computers, 'labs': labs, 'jobs': jobs, 'collectors': collectors, 'updated_at': time.time()}
+            controller_requests = db.execute("SELECT COUNT(*) FROM controller_devices WHERE state='pending'").fetchone()[0] if user['role']=='admin' else 0
+        return {'computers': computers, 'labs': labs, 'jobs': jobs, 'collectors': collectors, 'controller_requests': controller_requests, 'updated_at': time.time()}
 
     @app.post('/api/actions')
     def actions(payload: ActionInput, request: Request, user=Depends(current_user)):
@@ -471,6 +484,7 @@ def create_app(settings: Settings | None = None):
             if any(r.computer_id not in valid for r in payload.reports):
                 raise HTTPException(403, 'O computador não pertence a este controlador.')
             for r in payload.reports:
+                r.source = 'winrm' if cfg.power_mode == 'fiap' else cfg.power_mode
                 save_observation(db, r, time.time())
             db.execute('UPDATE collectors SET last_seen=? WHERE id=?', (time.time(), cid))
         return {'ok': True}
@@ -512,6 +526,7 @@ def create_app(settings: Settings | None = None):
 
     register_checks(app,cfg,current_user,collector)
     register_discovery(app,cfg,collector)
+    register_controllers(app,cfg,admin)
     register_hardware(app,cfg,current_user,operator)
 
     root = Path(cfg.frontend_path)

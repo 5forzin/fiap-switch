@@ -2,13 +2,13 @@
 
 ## Arquitetura na FIAP
 
-O site roda na Contabo. Um único controlador no servidor da LAN consulta a fila por HTTPS, executa comandos fixos por WinRM e envia as leituras. Os computadores dos laboratórios usam os recursos nativos do Windows. A rede interna não precisa aceitar conexões de entrada da internet.
+O site roda na AWS, separado do servidor da LAN. Em FIAP produção, um controlador aprovado consulta a fila por HTTPS com requisições assinadas, executa comandos fixos por WinRM e envia as leituras. Os computadores dos laboratórios usam os recursos nativos do Windows. A rede interna não precisa aceitar conexões de entrada da internet.
 
 O acesso do servidor aos IPs permite consultar, reiniciar e desligar por WinRM. Para ligar, Wake-on-LAN depende do suporte da placa de rede, da configuração de BIOS/UEFI e da passagem dos pacotes pelos switches. Se os andares estiverem em VLANs diferentes, valide encaminhamento de broadcast ou retransmissor com a equipe de redes.
 
 ## Instalação e modos de energia
 
-`sh setup.sh` no Linux ou `.\setup.ps1` no Windows apresenta a escolha do ambiente, gera segredos, cria a configuração do controlador e inicia o Docker. O administrador inicial é criado automaticamente na primeira inicialização do banco; a senha aleatória aparece uma única vez no terminal. Executar o instalador novamente preserva a configuração e as contas.
+`sh setup.sh` no Linux ou `.\setup.ps1` no Windows apresenta a escolha do ambiente, gera segredos e inicia o site com Docker. O administrador inicial é criado automaticamente na primeira inicialização do banco; a senha aleatória aparece uma única vez no terminal. Executar o instalador novamente preserva a configuração e as contas.
 
 | `POWER_MODE` | Ligar | Desligar e reiniciar | Escopo obrigatório |
 | --- | --- | --- | --- |
@@ -16,15 +16,17 @@ O acesso do servidor aos IPs permite consultar, reiniciar e desligar por WinRM. 
 | `aws` | API EC2 | API EC2 | `AWS_REGION` e `AWS_VPC_ID` no site |
 | `azure` | API ARM | API ARM | `AZURE_SUBSCRIPTION_ID` e `AZURE_RESOURCE_GROUP` no site |
 
-O modo independe do sistema operacional da hospedagem. Linux com Docker é suportado; o controlador Python também pode rodar em Linux. Leituras e descoberta usam WinRM nos três modos. Alterar o modo exige reiniciar o site e cancela comandos ainda na fila, evitando executar uma solicitação no provedor errado.
+O modo independe do sistema operacional da hospedagem. Linux com Docker é suportado; o controlador da FIAP também roda em Linux. AWS e Azure operam diretamente no processo do site: estado, configuração de hardware, descoberta e energia usam as APIs. Na FIAP, o servidor local consulta WinRM e envia Wake-on-LAN. Alterar o modo exige reiniciar o site e cancela comandos ainda na fila, evitando executar uma solicitação no provedor errado.
 
-Na AWS, atribua ao controlador uma identidade com `ec2:DescribeInstances` e `ec2:StartInstances`, `ec2:StopInstances`, `ec2:RebootInstances` limitados aos alvos autorizados. O SDK usa a cadeia normal de credenciais, incluindo perfil de instância ou `AWS_PROFILE` em desenvolvimento. As operações encontram uma única instância pelo IP privado dentro da VPC configurada.
+Na AWS, atribua ao site uma identidade com `ec2:DescribeInstances`, `ec2:DescribeInstanceTypes`, `ec2:DescribeVolumes` e `ec2:StartInstances`, `ec2:StopInstances`, `ec2:RebootInstances` limitados aos alvos autorizados. O SDK usa a cadeia normal de credenciais, incluindo perfil de instância ou `AWS_PROFILE` em desenvolvimento. As operações encontram uma única instância pelo IP privado dentro da VPC configurada. Apenas VMs Windows com a tag `FIAPSwitchManaged=true` entram na descoberta e nas operações.
 
-No Azure, use uma identidade gerenciada dedicada ou as credenciais reconhecidas por `DefaultAzureCredential`, com leitura de interfaces e as ações `Microsoft.Compute/virtualMachines/start/action`, `deallocate/action` e `restart/action` no grupo autorizado. O IP precisa corresponder a uma única VM desse grupo. As APIs são assíncronas; a fila registra a aceitação, e a leitura seguinte confirma o estado. Não há fallback para outra forma de energia.
+No Azure, atribua ao site uma identidade gerenciada dedicada ou as credenciais reconhecidas por `DefaultAzureCredential`, com leitura de VMs, tamanhos, discos e interfaces, além das ações `Microsoft.Compute/virtualMachines/start/action`, `deallocate/action` e `restart/action` no grupo autorizado. O IP precisa corresponder a uma única VM desse grupo, marcada com `FIAPSwitchManaged=true`. As APIs são assíncronas; a fila registra a aceitação, e a leitura seguinte confirma o estado. Não há fallback para outra forma de energia.
+
+Em nuvem, RAM e CPUs são capacidades provisionadas; armazenamento é a soma dos discos anexados. A aplicação não deduz uso de CPU, memória ou saúde do Windows desses valores. O campo **Fonte do inventário** identifica AWS, Azure ou WinRM. Os modos de nuvem não precisam da senha WinRM nem de acesso direto à LAN.
 
 [API EC2](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_DescribeInstances.html) · [API de energia Azure](https://learn.microsoft.com/en-us/rest/api/compute/virtual-machines/start?view=rest-compute-2025-04-01) · [Interfaces Azure](https://learn.microsoft.com/en-us/rest/api/virtualnetwork/network-interfaces/list?view=rest-virtualnetwork-2026-01-01) · [Identidade Azure](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.defaultazurecredential)
 
-Em salas com quantidade indefinida, **Verificações e histórico → Verificar andar** solicita a descoberta. A varredura se limita a `.1`–`.100` da sub-rede cadastrada, preserva máquinas existentes e só cadastra novas após uma leitura WinRM autenticada. Novos registros já passam pela comparação de hardware e entram na verificação e no histórico diário. Um equipamento desligado e nunca cadastrado não pode ser identificado por essa consulta.
+Em salas com quantidade indefinida, **Verificações e histórico → Verificar andar** solicita a descoberta. A varredura se limita a `.1`–`.100` da sub-rede cadastrada e preserva máquinas existentes. Na FIAP, novas máquinas exigem uma leitura WinRM autenticada. Na nuvem, exige VM ligada, tag autorizada e identificação pela API no escopo configurado. Novos registros já passam pela comparação de hardware e entram na verificação e no histórico diário.
 
 ## Contas e permissões
 
@@ -65,18 +67,34 @@ Authlib valida assinatura, emissor, audiência, estado, nonce e PKCE. A autoriza
 
 ## Controlador da LAN
 
-Instale Python 3.12+ no servidor Windows ou Linux com acesso aos laboratórios:
+Na conta de administrador, abra **Controladores**, baixe o pacote para o sistema do servidor e extraia. O convite expira em 30 minutos. Confira a impressão digital da assinatura no painel por um canal confiável.
+
+Windows: instale **Python 3.12+ para todos os usuários** e abra PowerShell como administrador na pasta extraída:
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
-Copy-Item collector/.env.example .env.collector
-.venv\Scripts\python -m collector.service
+.\instalar.ps1 -Fingerprint IMPRESSAO_DO_PAINEL
 ```
 
-No Linux, use `.venv/bin/python` e o serviço systemd em `infra/`. No Windows, configure o Agendador de Tarefas para iniciar `python -m collector.service` na inicialização, com a raiz do repositório como diretório de trabalho. Use a conta de serviço autorizada, impeça execuções duplicadas e configure reinicialização em caso de falha. Restrinja `.env.collector` à conta de serviço e aos administradores.
+Linux: instale Python 3.12+ com `venv` e execute:
 
-Preencha `SWITCH_URL`, `COLLECTOR_TOKEN`, `WINRM_USERNAME` e `WINRM_PASSWORD`. O token deve corresponder ao configurado no site. Use uma conta do domínio dedicada, com os direitos necessários para gerenciamento remoto e desligamento. Se utilizar Just Enough Administration, valide os comandos fixos antes da implantação.
+```sh
+sudo sh instalar.sh --fingerprint IMPRESSAO_DO_PAINEL
+```
+
+Use `PYTHON=python3.12` quando esse for o nome do executável. O instalador pede usuário e senha WinRM sem ecoar a senha. Para instalação sem perguntas, forneça `--config /caminho/privado.env --ca /caminho/ca.pem` no Linux ou `-Config` e `-Ca` no Windows. O arquivo privado deve conter `WINRM_USERNAME` e `WINRM_PASSWORD`; a senha não deve ir na linha de comando.
+
+O pacote contém um manifesto assinado com hashes dos arquivos. O instalador compara sua impressão digital com a informada, verifica assinatura e validade e recusa alterações. O controlador cria sua chave privada no próprio servidor e apresenta a solicitação ao site. Na conta de administrador, compare nome, IP e impressão digital e use **Aprovar conexão**. Origem por IP é informação auxiliar, não autenticação.
+
+O servidor só recebe inventário e comandos após aprovação. Cada requisição tem assinatura Ed25519, horário com tolerância de 60 segundos e nonce de uso único. Sincronize o relógio. Apenas um controlador pode estar aprovado por campus; revogue o atual antes de aprovar uma substituição. **Revogar** bloqueia novas requisições imediatamente, mas não desfaz um comando já aceito pelo Windows.
+
+| Sistema | Execução | Arquivos e diagnóstico |
+| --- | --- | --- |
+| Windows | Tarefa `FIAP-Switch-Production-Controller`, conta Local Service, privilégio limitado | `C:\ProgramData\FIAPSwitch\Controller`; log em `data\controller.log`. |
+| Linux | Serviço `fiap-switch-controller`, usuário sem login `fiap-switch-controller` | `/opt/fiap-switch-controller`; `journalctl -u fiap-switch-controller`. |
+
+A configuração WinRM fica restrita a administradores e à identidade do serviço. A chave do dispositivo fica em `data/`, protegida por ACL no Windows e modo `0600` no Linux. O site nunca recebe essa chave privada nem a senha WinRM. O convite usado é apagado da configuração local. Pacotes não devem ser enviados ao GitHub ou compartilhados publicamente.
+
+Use uma conta do domínio dedicada, com os direitos necessários para gerenciamento remoto e desligamento. Se utilizar Just Enough Administration, valide os comandos fixos antes da implantação.
 
 O padrão é WinRM HTTPS na porta `5986`, NTLM, criptografia das mensagens e validação do certificado. `WINRM_CA_BUNDLE` aceita PEM com a autoridade certificadora da instituição. Para Kerberos, instale `pywinrm[kerberos]`, configure domínio, renovação dos tíquetes da conta de serviço e nomes DNS que resolvam para o IP cadastrado. Kerberos permite HTTP na porta `5985` com criptografia das mensagens.
 
@@ -100,13 +118,13 @@ O cadastro cria alunos a partir de `.1`, até a quantidade informada, e opcional
 
 A visão geral resume os andares sem renderizar cada computador. **Computadores** abre no primeiro andar acessível e em sua primeira sala. Trocar de andar seleciona sua primeira sala. **Todos os andares permitidos** habilita operações entre andares quando autorizadas; a lista continua paginada.
 
-- **Ligado:** o WinRM retornou uma leitura válida.
-- **Sem resposta:** a consulta falhou; isso não comprova desligamento elétrico.
+- **Ligado:** o WinRM retornou uma leitura válida na FIAP; em nuvem, a API confirmou a VM em execução.
+- **Sem resposta:** na FIAP, a consulta falhou, sem comprovar desligamento elétrico; em nuvem, a VM não está em execução.
 - **Não verificado:** não há leitura ou ela tem mais de 120 segundos.
 
 Comandos usam chave de idempotência, expiram após cinco minutos na fila e têm prazo de execução de dois minutos. Se o prazo de execução expirar, o resultado é incerto e o comando não é repetido automaticamente.
 
-Reiniciar e desligar programam aviso de 60 segundos no Windows. Ao final, aplicativos podem ser encerrados à força; os usuários precisam salvar o trabalho. A interface exige confirmação. **Enviado** significa que o Windows aceitou o comando ou que o pacote Wake-on-LAN foi enviado. A confirmação de estado vem da próxima leitura.
+Na FIAP, reiniciar e desligar programam aviso de 60 segundos no Windows. Ao final, aplicativos podem ser encerrados à força; os usuários precisam salvar o trabalho. A interface exige confirmação. **Enviado** significa que o Windows ou a API aceitou o comando, ou que o pacote Wake-on-LAN foi enviado. A confirmação de estado vem da próxima leitura. As ações das APIs de nuvem não incluem o aviso WinRM de 60 segundos.
 
 ## Verificações e histórico diário
 
@@ -128,11 +146,13 @@ Antes da negociação WinRM, o controlador verifica TCP com prazo curto. Resulta
 
 Copie `.env.example` para `.env`, preencha a configuração privada, execute `docker compose up -d --build` e crie o administrador. O contêiner deve ouvir somente em loopback, atrás de Caddy ou outro proxy HTTPS. Ele usa usuário sem privilégios, sistema de arquivos somente para leitura e volume próprio para SQLite. Execute uma única réplica web.
 
-Use a API de backup on-line do SQLite; não copie um banco em uso com WAL diretamente. Guarde também o ambiente privado em local seguro. Rotacione o token nas duas pontas. Defina retenção de auditoria e backups com a TI.
+Use a API de backup on-line do SQLite; não copie um banco em uso com WAL diretamente. Guarde também o ambiente privado e `data/controller-issuer.key` em armazenamento protegido. Essa chave assina os pacotes do site. A identidade dos controladores permanece no servidor local. Defina retenção, restauração e rotação com a TI.
+
+`infra/aws_web.py` prepara uma VPC própria, endereço estável, host Linux com IMDSv2 e gerenciamento por SSM. O site tem identidade IAM própria e não abre SSH. O banco e os certificados ficam em volume EBS criptografado persistente, separado da raiz. `compose.aws.yml` adiciona Caddy com HTTPS e confiança restrita no endereço do proxy; ambos os contêineres usam usuários sem privilégios e sistema de arquivos somente para leitura. `scripts/deploy-aws.sh` aplica o site já configurado. O provisionamento não substitui uma política de backups externa ao host.
 
 ## Laboratório Windows na AWS
 
-O ambiente tem controlador Windows em `10.3.31.10`, aluno em `10.3.31.4` e professor em `10.3.22.100`. Todos usam Windows Server 2022, discos EBS criptografados e IMDSv2. WinRM aceita apenas tráfego privado entre as instâncias. SSM administra o laboratório; não é um agente da aplicação instalado na FIAP.
+O ambiente tem controlador Windows em `10.3.31.10`, alunos em `10.3.31.4` e `10.3.22.4` e professor em `10.3.22.100`. Todos usam Windows Server 2022, discos EBS criptografados e IMDSv2. WinRM aceita apenas tráfego privado entre as instâncias. SSM administra o laboratório; não é um agente da aplicação instalado na FIAP. O site AWS está em outra VPC e usa exclusivamente as APIs para os três alvos, identificados por tags e ARNs autorizados.
 
 ```powershell
 aws login --profile fiap-switch --region us-east-2
@@ -142,11 +162,11 @@ aws login --profile fiap-switch --region us-east-2
 
 Não execute `provision` se o arquivo já descreve um laboratório existente. O script registra os recursos criados para recuperação e remoção direcionada. O provisionamento antigo usa controlador Linux e um alvo Windows; mantenha arquivos de estado distintos.
 
-O instalador Python tem sua assinatura oficial verificada. O controlador Windows roda como tarefa de inicialização, com configurações restritas a SYSTEM e administradores. Certificados WinRM incluem IP privado e DNS.
+O instalador Python tem sua assinatura oficial verificada. O programa de produção Windows roda com Local Service e configurações restritas. Certificados WinRM incluem IP privado e DNS. Um Linux temporário valida a instalação systemd e as leituras WinRM; ele é removido após o teste, preservando as máquinas da apresentação.
 
-`scripts/apresentacao.py` prepara salas e contas usando o ambiente já registrado. Senhas ficam exclusivamente em `runtime/apresentacao.json`. A ação `suporte` prepara a conta de suporte e atualiza o arquivo privado de acessos. A ação `hardware` anexa um disco real de 8 GiB à máquina `301-4`, preservando o padrão de 30 GiB e um disco; o volume é criptografado e configurado para exclusão junto com a instância. O controlador continua usando WinRM e Wake-on-LAN; não aciona energia pela API da AWS.
+`scripts/apresentacao.py` prepara salas e contas usando o ambiente já registrado. Senhas ficam exclusivamente em `runtime/apresentacao.json`. A ação `suporte` prepara a conta de suporte e atualiza o arquivo privado de acessos. A ação `hardware` anexa um disco real de 8 GiB à máquina `301-4`, preservando o padrão de 30 GiB e um disco. `202-4` também recebeu um disco de 8 GiB na validação do monitor do 2º andar. Os volumes são criptografados e configurados para exclusão junto com a instância.
 
-**Mantenha as três instâncias ligadas para a apresentação solicitada.** Não execute limpeza ou desligamento ao concluir a validação desse ambiente. Após o responsável encerrar seu uso:
+**Mantenha os quatro Windows e o site ligados para a apresentação solicitada.** Não execute limpeza ou desligamento desses recursos ao concluir a validação. Após o responsável encerrar seu uso:
 
 ```powershell
 .venv\Scripts\python infra/aws_lab.py stop --state runtime/aws-validation-20261027.json
@@ -155,13 +175,14 @@ O instalador Python tem sua assinatura oficial verificada. O controlador Windows
 
 `stop` preserva discos EBS cobrados. `destroy` remove instâncias, volumes e recursos deste laboratório. Nunca opere recursos externos ao arquivo de estado conferido.
 
-A AWS reserva `.0` a `.3`, por isso o aluno usa `.4`. VPC não oferece broadcast e EC2 desligada não recebe Wake-on-LAN. A validação comprova pacotes emitidos, WinRM e desligamentos/reinicializações; ligar fisicamente exige a LAN do campus.
+A AWS reserva `.0` a `.3`, por isso o aluno usa `.4`. VPC não oferece broadcast e EC2 desligada não recebe Wake-on-LAN. O modo AWS usa APIs e foi validado com desligamento e ligamento real pela conta de monitor. O ligamento físico com Wake-on-LAN continua exigindo a LAN do campus.
 
 ## Acesso local pelo proxy
 
 O ambiente autorizado usa SOCKS5 em `127.0.0.1:1080`. Para acessar pelo navegador:
 
 ```powershell
+$env:SWITCH_BROWSER_URL='https://fiap-switch.18.223.245.218.sslip.io'
 .venv\Scripts\python -m scripts.browser_gateway
 ```
 

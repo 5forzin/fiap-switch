@@ -10,6 +10,9 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt && useradd --uid 10001 --create-home switch
 COPY backend/ backend/
+COPY collector/ collector/
+COPY installers/controller/ installers/controller/
+COPY requirements-controller.txt ./
 COPY scripts/create_admin.py scripts/create_admin.py
 COPY scripts/setup.py scripts/setup.py
 COPY --from=web /app/frontend/dist/ frontend/dist/

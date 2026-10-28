@@ -1,4 +1,4 @@
-"""Energia por API de nuvem, limitada ao escopo configurado na instalação."""
+"""Energia executada pelo próprio painel nas APIs de nuvem autorizadas."""
 
 import re
 from urllib.parse import urlparse
@@ -27,6 +27,7 @@ def aws_power(job, config):
     ec2 = boto3.client('ec2', region_name=region)
     matches = [instance for page in ec2.get_paginator('describe_instances').paginate(Filters=[
         {'Name': 'vpc-id', 'Values': [vpc]}, {'Name': 'private-ip-address', 'Values': [job['ip']]},
+        {'Name': 'tag:FIAPSwitchManaged', 'Values': ['true']},
         {'Name': 'instance-state-name', 'Values': ['pending', 'running', 'stopping', 'stopped']},
     ]) for reservation in page['Reservations'] for instance in reservation['Instances']]
     if len(matches) != 1 or matches[0]['PrivateIpAddress'] != job['ip'] or matches[0]['VpcId'] != vpc:
@@ -72,6 +73,10 @@ def azure_power(job, config):
             machine = matches.pop()
             if not machine.lower().startswith(prefix.lower()) or not re.fullmatch(r'[A-Za-z0-9._-]{1,64}', machine[len(prefix):]):
                 raise ValueError('A VM está fora do grupo configurado.')
+            vm = client.get(f'{machine}?api-version=2025-04-01')
+            vm.raise_for_status()
+            if vm.json().get('tags', {}).get('FIAPSwitchManaged') != 'true':
+                raise ValueError('A VM não foi marcada para gerenciamento pelo painel.')
             action = {'wake': 'start', 'shutdown': 'deallocate', 'restart': 'restart'}[job['action']]
             response = client.post(f'{machine}/{action}?api-version=2025-04-01')
             response.raise_for_status()
