@@ -1,4 +1,4 @@
-"""Validate the deployed API against the disposable AWS WinRM laboratory."""
+"""Valida a API publicada com o laboratório Windows descartável na AWS."""
 import json
 import subprocess
 import time
@@ -24,9 +24,9 @@ def await_command(ssm, command_id, instance, timeout=300):
         if result['Status'] == 'Success':
             return result['StandardOutputContent'].strip()
         if result['Status'] in ('Failed', 'Cancelled', 'TimedOut'):
-            raise RuntimeError(f"SSM command {command_id} failed: {result['StandardErrorContent'][-500:]}")
+            raise RuntimeError(f"Comando SSM {command_id} falhou: {result['StandardErrorContent'][-500:]}")
         time.sleep(3)
-    raise TimeoutError(f'SSM command {command_id} timed out.')
+    raise TimeoutError(f'Comando SSM {command_id} excedeu o tempo limite.')
 
 
 def main():
@@ -43,10 +43,10 @@ def main():
         session = request('GET', '/api/session')
         api.headers['X-CSRF-Token'] = session['user']['csrf']
         assert session['user']['role'] == 'admin' and session['user']['auth_type'] == 'local'
-        print('HTTPS password authentication: passed.', flush=True)
+        print('Autenticação com senha por HTTPS: aprovada.', flush=True)
         dashboard = request('GET', '/api/dashboard')
         if not any(lab['id'] == '301' for lab in dashboard['labs']):
-            request('POST', '/api/labs', json={'floor': 3, 'number': 1, 'label': 'AWS validation · Lab 301', 'students': 11, 'include_professor': False})
+            request('POST', '/api/labs', json={'floor': 3, 'number': 1, 'label': 'Validação AWS · Laboratório 301', 'students': 11, 'include_professor': False})
 
         read_token = "from pathlib import Path\nfor line in Path('/opt/fiap-switch/.env.production').read_text().splitlines():\n    if line.startswith('COLLECTOR_TOKEN='): print(line.split('=',1)[1])\n"
         token = subprocess.run(['ssh', '-i', r'C:\Users\antho\.ssh\id_rsa', '-o', 'BatchMode=yes', 'link@13.140.191.31', 'python3 -'], input=read_token, capture_output=True, text=True, check=True).stdout.strip()
@@ -54,7 +54,7 @@ def main():
         env = f"SWITCH_URL={URL}\nCOLLECTOR_TOKEN={token}\nWINRM_USERNAME={state['winrm_user']}\nWINRM_PASSWORD={state['winrm_password']}\nWINRM_CA_BUNDLE=/opt/fiap-switch/winrm-lab.pem\nPROBE_INTERVAL=15\n"
         start = f"set -eu\ncd /opt/fiap-switch\nprintf '%s' '{base64.b64encode(env.encode()).decode()}' | base64 -d > .env.collector\nchmod 600 .env.collector\nsystemctl stop fiap-switch-collector.service 2>/dev/null || true\nsystemd-run --unit=fiap-switch-collector --working-directory=/opt/fiap-switch /opt/fiap-switch/.venv312/bin/python -m collector.service\n"
         await_command(ssm, command(ssm, state['controller'], start), state['controller'])
-        print('AWS LAN collector connected.', flush=True)
+        print('Controlador da rede AWS conectado.', flush=True)
 
         def wait_state(predicate, label, timeout=240):
             deadline = time.time()+timeout
@@ -69,13 +69,13 @@ def main():
         def target(data):
             return next(pc for pc in data['computers'] if pc['id'] == '301-11')
 
-        initial = wait_state(lambda d: target(d)['status'] == 'online', 'Live WinRM telemetry on the website: passed.')
+        initial = wait_state(lambda d: target(d)['status'] == 'online', 'Telemetria real do WinRM no painel: aprovada.')
         assert target(initial)['metrics']['os'].startswith('Microsoft Windows Server 2022')
         assert target(initial)['mac']
         before = await_command(ssm, command(ssm, state['windows'], '(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString("o")', True), state['windows'])
         job = request('POST', '/api/actions', json={'action': 'restart', 'computer_ids': ['301-11']}, headers={'Idempotency-Key': str(uuid4())})['job_ids'][0]
-        wait_state(lambda d: any(j['id'] == job and j['state'] == 'completed' for j in d['jobs']), 'Restart delivered through the website queue: passed.')
-        # Wait for the actual reboot, not merely command acceptance.
+        wait_state(lambda d: any(j['id'] == job and j['state'] == 'completed' for j in d['jobs']), 'Reinicialização enviada pela fila do painel: aprovada.')
+        # Aguarda a reinicialização efetiva, além da confirmação de recebimento do comando.
         deadline = time.time()+300
         after = before
         while time.time() < deadline:
@@ -89,21 +89,21 @@ def main():
                 continue
             if after != before:
                 break
-        assert after != before, 'Windows did not reboot.'
-        wait_state(lambda d: target(d)['status'] == 'online' and target(d)['metrics'].get('uptime_hours', 99) < 0.1, 'Windows reboot and new uptime verified: passed.')
+        assert after != before, 'O Windows não reiniciou.'
+        wait_state(lambda d: target(d)['status'] == 'online' and target(d)['metrics'].get('uptime_hours', 99) < 0.1, 'Reinicialização e novo tempo de atividade confirmados.')
         job = request('POST', '/api/actions', json={'action': 'shutdown', 'computer_ids': ['301-11']}, headers={'Idempotency-Key': str(uuid4())})['job_ids'][0]
-        wait_state(lambda d: any(j['id'] == job and j['state'] == 'completed' for j in d['jobs']), 'Shutdown delivered through the website queue: passed.')
+        wait_state(lambda d: any(j['id'] == job and j['state'] == 'completed' for j in d['jobs']), 'Desligamento enviado pela fila do painel: aprovado.')
         deadline = time.time()+240
         while time.time() < deadline:
             status = ec2.describe_instances(InstanceIds=[state['windows']])['Reservations'][0]['Instances'][0]['State']['Name']
             if status == 'stopped':
                 break
             time.sleep(10)
-        assert status == 'stopped', 'Windows did not stop.'
-        wait_state(lambda d: target(d)['status'] == 'unreachable', 'Shutdown and truthful unreachable state verified: passed.')
+        assert status == 'stopped', 'O Windows não desligou.'
+        wait_state(lambda d: target(d)['status'] == 'unreachable', 'Desligamento e indicação de ausência de resposta confirmados.')
         state['e2e_passed'] = {'restart_boot_changed': True, 'shutdown_state': status, 'verified_at': time.time(), 'before_boot': before, 'after_boot': after}
         save(state)
-        print('End-to-end validation passed. Destroy the disposable AWS lab next.', flush=True)
+        print('Validação ponta a ponta aprovada. Remova o laboratório descartável após o uso.', flush=True)
 
 
 if __name__ == '__main__':

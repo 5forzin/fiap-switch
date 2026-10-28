@@ -1,4 +1,4 @@
-"""Loopback-only UI test gateway; validates upstream TLS and keeps production cookie settings."""
+"""Acesso local de validação pelo proxy, com TLS e cookies de produção preservados."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -28,7 +28,7 @@ class Handler(BaseHTTPRequestHandler):
                 content=self.rfile.read(int(self.headers.get("Content-Length", "0"))),
             )
         except httpx.HTTPError:
-            self.send_error(502, "Upstream connection failed.")
+            self.send_error(502, "Falha na conexão com o servidor.")
             return
         self.send_response(result.status_code)
         for key, value in result.headers.multi_items():
@@ -43,12 +43,12 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(result.content)
 
-    do_GET = do_POST = do_PUT = forward
+    do_GET = do_POST = do_PUT = do_DELETE = forward
 
     def log_message(self, *_):
         pass
 
 
 if __name__ == "__main__":
-    print("UI validation gateway: http://localhost:8011", flush=True)
+    print("Acesso local ao painel: http://localhost:8011", flush=True)
     ThreadingHTTPServer(("127.0.0.1", 8011), Handler).serve_forever()

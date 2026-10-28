@@ -123,10 +123,14 @@ def test_password_change_revokes_other_sessions(config):
 def test_validation_does_not_echo_passwords(config):
     with TestClient(create_app(config), base_url=config.base_url) as client:
         assert sign_in(client).status_code == 200
-        payload = {'email': 'new@fiap.com.br', 'name': 'New', 'role': 'monitor', 'password': 'private-short'}
+        payload = {'email': 'new@fiap.com.br', 'name': 'Novo usuário', 'role': 'monitor', 'password': 'curta', 'grants': {'floors': [3]}}
         response = client.put('/api/users', json=payload)
         assert response.status_code == 422
         assert payload['password'] not in response.text
+        assert response.json()['detail'][0]['msg'] == 'A senha deve ter pelo menos 8 caracteres.'
+        invalid_role = client.put('/api/users', json={**payload, 'password': PASSWORD, 'role': 'invalid'})
+        assert invalid_role.status_code == 422
+        assert invalid_role.json()['detail'][0]['msg'] == 'Selecione uma opção válida.'
         assert client.put('/api/users', json={**payload, 'password': PASSWORD, 'grants': {'labs': ['999']}}).status_code == 422
         uid = client.get('/api/session').json()['user']['id']
         assert client.put('/api/users', json={'id': uid, 'email': 'admin@fiap.com.br', 'name': 'Admin', 'role': 'admin', 'enabled': False}).status_code == 409
@@ -139,7 +143,7 @@ def test_legacy_login_migrates_without_overwriting_password(config):
     key = hashlib.scrypt(PASSWORD.encode(), salt=salt, n=16384, r=8, p=1, dklen=32)
     legacy = 'scrypt$'+base64.b64encode(salt).decode()+'$'+base64.b64encode(key).decode()
     with connect(config.database_path) as db:
-        db.execute("INSERT INTO users VALUES ('temporary-admin','admin@fiap.com.br','Admin','admin',1,'{}')")
+        db.execute("INSERT INTO users(id,email,name,role,enabled,grants) VALUES ('temporary-admin','admin@fiap.com.br','Admin','admin',1,'{}')")
         db.execute("INSERT INTO metadata VALUES ('temporary_password_hash',?)", (legacy,))
     with TestClient(create_app(config), base_url=config.base_url) as client:
         assert sign_in(client).status_code == 200
@@ -196,6 +200,8 @@ def test_password_change_rechecks_revoked_session(config, monkeypatch):
 @pytest.mark.parametrize('changes', [
     {'session_secret': ''}, {'collector_token': 'short'}, {'base_url': 'http://testserver'},
     {'cookie_secure': False}, {'auth_mode': 'entra'}, {'bootstrap_admin_email': 'admin@example.com'},
+    {'session_secret': 'substitua-por-pelo-menos-32-caracteres-aleatorios'},
+    {'collector_token': 'substitua-por-pelo-menos-32-caracteres-aleatorios'},
 ])
 def test_invalid_production_configuration_is_rejected(config, changes):
     for key, value in changes.items():

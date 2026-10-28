@@ -13,7 +13,7 @@ target = folder / f'switch-{time.strftime("%Y%m%d-%H%M%S")}.db'
 with sqlite3.connect('/app/data/switch.db') as source, sqlite3.connect(target) as backup:
     source.backup(backup)
 os.chmod(target, 0o600)
-print('Database backup created.')
+print('Backup do banco de dados criado.')
 PY
 fi
 tar -xzf /tmp/fiap-switch-source.tar.gz

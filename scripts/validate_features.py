@@ -1,4 +1,4 @@
-"""Exercise the published application against owned Windows EC2 fixtures."""
+"""Valida a aplicação publicada com as máquinas Windows do laboratório na AWS."""
 
 import argparse
 import base64
@@ -26,7 +26,7 @@ def prepare(v):
                 json={
                     "floor": floor,
                     "number": 1,
-                    "label": f"AWS validation · Lab {lid}",
+                    "label": f"Validação AWS · Laboratório {lid}",
                     "students": 4 if floor == 3 else 0,
                     "include_professor": floor != 3,
                 },
@@ -93,7 +93,7 @@ def prepare(v):
             )
             payload = {
                 "email": email,
-                "name": f"AWS validation {key}",
+                "name": f"Validação AWS {key}",
                 "role": role,
                 "grants": grants,
                 "password": password,
@@ -198,29 +198,25 @@ def accounts(v):
         )
         payload = {
             **v.accounts["floor3"]["payload"],
-            "grants": {"computers": ["202-100"]},
+            "grants": {"floors": [2]},
         }
         assert admin.put("/api/users", json=payload).status_code == 200
         assert monitor.get("/api/dashboard").status_code == 401
         with v.client("floor3") as specific:
-            assert [
-                pc["id"] for pc in specific.get("/api/dashboard").json()["computers"]
-            ] == ["202-100"]
+            assert {
+                pc["floor"] for pc in specific.get("/api/dashboard").json()["computers"]
+            } == {2}
         assert (
             admin.put(
                 "/api/users", json={**payload, "grants": {"labs": ["202"]}}
             ).status_code
-            == 200
+            == 422
         )
-        with v.client("floor3") as lab:
-            assert {
-                pc["lab_id"] for pc in lab.get("/api/dashboard").json()["computers"]
-            } == {"202"}
         assert (
             admin.put("/api/users", json=v.accounts["floor3"]["payload"]).status_code
             == 200
         )
-        v.record("laboratory_computer_grants_and_immediate_session_revocation", True)
+        v.record("single_floor_assignment_and_immediate_session_revocation", True)
         old_password = v.accounts["viewer"]["password"]
         new_password = secrets.token_urlsafe(24)
         assert (
@@ -351,7 +347,7 @@ def health(v):
                 else None
             )
 
-        pcs = v.wait(online, "Actual Windows telemetry did not arrive.", timeout=240)
+        pcs = v.wait(online, "A telemetria real dos Windows não chegou.", timeout=240)
         for target in v.state["targets"]:
             pc = pcs[target["computer_id"]]
             assert pc["mac"] and pc["metrics"]["os"].startswith(
@@ -401,7 +397,7 @@ def pause(v):
                 f"/api/collector/jobs/{claimed['id']}/result",
                 json={
                     "state": "completed",
-                    "message": "Invalid token test",
+                    "message": "Teste de token inválido",
                     "lease_token": "incorrect",
                 },
             ).status_code
@@ -452,7 +448,7 @@ def pause(v):
             except httpx.HTTPError:
                 return None
 
-        after = v.wait(recovered, "Web process did not recover.", timeout=60)
+        after = v.wait(recovered, "O servidor web não voltou.", timeout=60)
         assert {j["id"] for j in before} <= {j["id"] for j in after["jobs"]}
         assert any(
             j["id"] == v.state["outage"]["queued_job"] and j["state"] == "queued"
@@ -462,14 +458,14 @@ def pause(v):
             "queue_and_authenticated_session_survive_real_web_container_restart", True
         )
     print(
-        "Collector outage started. Real stale/lease checks become due after 125 seconds; queued expiry after 305 seconds.",
+        "Controlador interrompido. Verifique a expiração da leitura e da execução após 125 segundos; a fila, após 305 segundos.",
         flush=True,
     )
 
 
 def stale(v):
     assert time.time() - v.state["outage"]["started"] >= 125, (
-        "Wait for the actual 120-second timeout."
+        "Aguarde o prazo real de 120 segundos."
     )
     with v.client() as admin:
         data = admin.get("/api/dashboard").json()
@@ -478,7 +474,7 @@ def stale(v):
             for pc in data["computers"]
         )
         job = next(j for j in data["jobs"] if j["id"] == v.state["outage"]["lease_job"])
-        assert job["state"] == "failed" and "unknown" in job["message"].lower()
+        assert job["state"] == "failed" and "desconhecido" in job["message"].lower()
         v.record(
             "actual_collector_outage_stale_health_and_interrupted_lease_timeout",
             {
@@ -505,14 +501,14 @@ def revoke(v):
 
 def resume(v):
     assert time.time() - v.state["outage"]["started"] >= 305, (
-        "Wait for the actual five-minute queue timeout."
+        "Aguarde o prazo real de cinco minutos da fila."
     )
     with v.client() as admin:
         data = admin.get("/api/dashboard").json()
         job = next(
             j for j in data["jobs"] if j["id"] == v.state["outage"]["queued_job"]
         )
-        assert job["state"] == "failed" and "expired" in job["message"].lower()
+        assert job["state"] == "failed" and "expir" in job["message"].lower()
         v.record(
             "actual_five_minute_undelivered_command_expiry",
             {"elapsed_seconds": round(time.time() - v.state["outage"]["started"])},
@@ -536,8 +532,8 @@ def resume(v):
                 None,
             )
 
-        revoked = v.wait(rejected, "Revoked queued command was not rejected.", 60)
-        assert "revoked" in revoked["message"].lower()
+        revoked = v.wait(rejected, "O comando sem permissão não foi rejeitado.", 60)
+        assert "revog" in revoked["message"].lower()
         assert (
             admin.put("/api/users", json=v.accounts["floor2"]["payload"]).status_code
             == 200
@@ -573,8 +569,10 @@ def failure(v):
                     else None
                 )
 
-            job = v.wait(failed, "WinRM outage was not reported truthfully.", 120)
-            assert "failed" in job["message"].lower()
+            job = v.wait(
+                failed, "A falha do WinRM não foi informada corretamente.", 120
+            )
+            assert "falhou" in job["message"].lower()
         assert v.boot_times()[target["computer_id"]] == before
         v.record(
             "real_winrm_service_failure_command_failure_and_no_false_power_state",
@@ -594,7 +592,7 @@ def restart_before(v):
     v.state["power"] = {"started": time.time(), "before": v.boot_times()}
     v.save()
     print(
-        "Actual boot timestamps recorded. Submit the restart from the web interface.",
+        "Horários de inicialização registrados. Reinicie as máquinas pela interface.",
         flush=True,
     )
 
@@ -615,7 +613,9 @@ def restart_after(v):
                 else None
             )
 
-        jobs = v.wait(delivered, "Both restart commands were not delivered.", 180)
+        jobs = v.wait(
+            delivered, "Os dois comandos de reinicialização não foram enviados.", 180
+        )
         deadline = time.time() + 600
         while time.time() < deadline:
             try:
@@ -636,9 +636,12 @@ def restart_after(v):
                     health(v)
                     return
             except (ClientError, RuntimeError, TimeoutError) as error:
-                print(f"Waiting for Windows reboot: {type(error).__name__}", flush=True)
+                print(
+                    f"Aguardando a reinicialização do Windows: {type(error).__name__}",
+                    flush=True,
+                )
             time.sleep(10)
-        raise TimeoutError("Actual Windows boot timestamps did not change.")
+        raise TimeoutError("Os horários reais de inicialização não mudaram.")
 
 
 def shutdown_after(v):
@@ -649,7 +652,7 @@ def shutdown_after(v):
                 for j in admin.get("/api/dashboard").json()["jobs"]
                 if j["action"] == "shutdown" and j["state"] == "completed"
             ],
-            "Shutdown was not delivered.",
+            "O desligamento não foi enviado.",
             120,
         )
         stopped = v.wait(
@@ -658,7 +661,7 @@ def shutdown_after(v):
                 if (states := v.target_states())
                 else None
             ),
-            "Windows targets did not stop.",
+            "Os alvos Windows não desligaram.",
             300,
         )
         v.record(
@@ -671,7 +674,7 @@ def shutdown_after(v):
             result = admin.get(f"/api/checks/{check_id}").json()
             return result if result["state"] == "completed" else None
 
-        result = v.wait(checked, "Stopped machines were not checked.", 180)
+        result = v.wait(checked, "As máquinas desligadas não foram verificadas.", 180)
         assert result["summary"]["unreachable"] == 2
         assert all(pc["last_online"] for pc in result["computers"])
         v.record(
@@ -698,7 +701,7 @@ def shutdown_after(v):
 
 def wake_capture(v):
     controller = v.state["controller"]
-    # ENA did not expose these packets to PktMon. Receive real local UDP broadcasts instead.
+    # A ENA não expôs os pacotes ao PktMon. A captura usa a recepção UDP local.
     listener = (
         "import socket,json; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); "
         "s.bind(('',9)); s.settimeout(30); "
@@ -727,7 +730,7 @@ def wake_capture(v):
             )
             return job if job["state"] == "completed" else None
 
-        v.wait(delivered, "Wake packet was not sent.", 120)
+        v.wait(delivered, "O pacote Wake-on-LAN não foi enviado.", 120)
     packets = json.loads(v.wait_command(controller, command, 90))["packets"]
     expected = b"\xff" * 6 + bytes.fromhex(pc["mac"].replace(":", "")) * 16
     assert len(packets) == 3 and all(
@@ -741,7 +744,7 @@ def wake_capture(v):
             "received_udp_datagrams": len(packets),
             "payload_bytes": len(expected),
             "magic_packet_payload_matches_target_mac": True,
-            "limit": "EC2 does not support broadcast Wake-on-LAN; physical wake requires campus validation.",
+            "limit": "A EC2 não oferece Wake-on-LAN por broadcast; o ligamento físico exige validação no campus.",
         },
     )
 
@@ -757,7 +760,9 @@ def persistence(v):
             "import subprocess; subprocess.run(['sudo','-n','docker','restart','fiap-switch-web-1'],check=True)"
         )
         v.wait(
-            lambda: admin.get("/healthz").status_code == 200, "Web restart failed.", 90
+            lambda: admin.get("/healthz").status_code == 200,
+            "A reinicialização do servidor web falhou.",
+            90,
         )
         after = {
             "checks": admin.get("/api/checks").json(),
@@ -774,19 +779,19 @@ def persistence(v):
 def export_results(v):
     output = {
         "date": "2026-10-27",
-        "environment": "Published HTTPS application, Windows Server 2022 controller and two native WinRM HTTPS targets in an isolated AWS VPC.",
+        "environment": "Aplicação publicada por HTTPS, controlador Windows Server 2022 e dois alvos WinRM HTTPS em uma VPC isolada na AWS.",
         "results": v.results,
         "limitations": [
-            "Physical Wake-on-LAN requires campus LAN validation because AWS VPC does not support broadcast.",
-            "Microsoft Entra SSO requires FIAP tenant application registration; local password accounts were tested.",
-            "Daily date rollover was verified by automated tests, not by changing live clocks.",
+            "O Wake-on-LAN físico exige validação na LAN do campus, pois a VPC da AWS não oferece broadcast.",
+            "O SSO Microsoft Entra exige o cadastro da aplicação no diretório FIAP; as contas locais com senha foram testadas.",
+            "A mudança diária de data foi validada por testes automatizados, sem alterar os relógios reais.",
         ],
     }
     Path("docs/validation-2026-10-27.json").write_text(
         json.dumps(output, indent=2) + "\n"
     )
     print(
-        f"Exported {len(v.results)} checks without private infrastructure state.",
+        f"Exportadas {len(v.results)} verificações sem dados privados de infraestrutura.",
         flush=True,
     )
 
@@ -795,7 +800,7 @@ def cleanup(v):
     print(
         v.powershell(
             v.state["controller"],
-            "Stop-ScheduledTask -TaskName FIAP-Switch-Collector; 'Collector stopped.'",
+            "Stop-ScheduledTask -TaskName FIAP-Switch-Collector; 'Controlador parado.'",
         ),
         flush=True,
     )
@@ -819,7 +824,7 @@ with connect('/app/data/switch.db') as db:
         db.execute('DELETE FROM jobs WHERE id=?', (jid,))
     checks = {r['check_id'] for r in db.execute('SELECT check_id,lab_id FROM check_results') if r['lab_id'] in labs}
     for lid in labs:
-        for table in ('check_results','daily_status','hardware_events','hardware_standards','computers'):
+        for table in ('check_results','daily_status','hardware_events','hardware_standards','lab_inventory','computers'):
             db.execute(f'DELETE FROM {table} WHERE lab_id=?', (lid,))
         db.execute('DELETE FROM labs WHERE id=?', (lid,))
     for cid in checks:
@@ -844,13 +849,13 @@ with connect('/app/data/switch.db') as db:
         }
         return states if all(s == "stopped" for s in states.values()) else None
 
-    states = v.wait(stopped, "Owned validation instances did not stop.", 300)
+    states = v.wait(stopped, "As instâncias do laboratório não desligaram.", 300)
     v.record(
         "owned_validation_fixtures_removed_and_all_three_ec2_instances_stopped",
         {
             **removed,
             "states": states,
-            "storage": "Encrypted EBS retained with stopped instances for reuse.",
+            "storage": "Volumes EBS criptografados mantidos com as instâncias desligadas para reutilização.",
         },
     )
 

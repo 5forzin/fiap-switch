@@ -8,6 +8,7 @@ from fastapi import Depends, HTTPException, Query
 
 from backend.db import allowed, connect, inventory
 from backend.models import CheckInput
+from backend.audit import activity_clause, activity_visible, audit
 
 LOCAL_ZONE = ZoneInfo("America/Sao_Paulo")
 
@@ -21,7 +22,14 @@ def public_result(row):
 
 def scope_clause(user, floor=None):
     clauses, values = [], []
-    if user["role"] != "admin":
+    if user["role"] == "monitor":
+        floors = user["grants"].get("floors", [])
+        if len(floors) == 1:
+            clauses.append("floor=?")
+            values.extend(floors)
+        else:
+            clauses.append("0")
+    elif user["role"] not in ("admin", "support"):
         access = []
         for key, field in (
             ("floors", "floor"),
@@ -120,16 +128,19 @@ def record_observation(db, computer, report, now):
         ),
     )
     completed = db.execute(
-        "SELECT id,actor_id FROM checks WHERE state='queued' AND NOT EXISTS(SELECT 1 FROM check_results r WHERE r.check_id=checks.id AND r.checked_at IS NULL)"
+        "SELECT id,actor_id,actor_role FROM checks WHERE state='queued' AND NOT EXISTS(SELECT 1 FROM check_results r WHERE r.check_id=checks.id AND r.checked_at IS NULL)"
     ).fetchall()
     for check in completed:
         db.execute(
             "UPDATE checks SET state='completed',finished=? WHERE id=?",
             (now, check["id"]),
         )
-        db.execute(
-            "INSERT INTO audit(actor,action,target,created) VALUES (?,?,?,?)",
-            (check["actor_id"], "check_completed", check["id"], now),
+        audit(
+            db,
+            check["actor_id"],
+            "check_completed",
+            check["id"],
+            actor_role=check["actor_role"],
         )
 
 
@@ -137,7 +148,9 @@ def register_checks(app, cfg, current_user, collector):
     @app.post("/api/checks")
     def run_check(payload: CheckInput, user=Depends(current_user)):
         if user["role"] == "viewer":
-            raise HTTPException(403, "Observer accounts cannot request checks.")
+            raise HTTPException(
+                403, "Contas de observador não podem iniciar verificações."
+            )
         with connect(cfg.database_path) as db:
             db.execute("BEGIN IMMEDIATE")
             pcs = [
@@ -148,7 +161,7 @@ def register_checks(app, cfg, current_user, collector):
                 and (not payload.lab_id or pc["lab_id"] == payload.lab_id)
             ]
             if not pcs:
-                raise HTTPException(404, "No computers are assigned to this selection.")
+                raise HTTPException(404, "Nenhum computador permitido nesta seleção.")
             ids = {pc["id"] for pc in pcs}
             for old in db.execute(
                 "SELECT id FROM checks WHERE actor_id=? AND state='queued'",
@@ -164,8 +177,8 @@ def register_checks(app, cfg, current_user, collector):
                     return {"id": old["id"]}
             cid, now = str(uuid4()), time.time()
             db.execute(
-                "INSERT INTO checks(id,actor_id,created) VALUES (?,?,?)",
-                (cid, user["id"], now),
+                "INSERT INTO checks(id,actor_id,created,actor_role) VALUES (?,?,?,?)",
+                (cid, user["id"], now, user["role"]),
             )
             db.executemany(
                 "INSERT INTO check_results(check_id,computer_id,floor,lab_id,hostname,ip,number) VALUES (?,?,?,?,?,?,?)",
@@ -182,15 +195,15 @@ def register_checks(app, cfg, current_user, collector):
                     for pc in pcs
                 ],
             )
-            db.execute(
-                "INSERT INTO audit(actor,action,target,created) VALUES (?,?,?,?)",
-                (user["id"], "check_requested", cid, now),
-            )
+            audit(db, user["id"], "check_requested", cid)
         return {"id": cid}
 
     @app.get("/api/checks")
     def checks(floor: int | None = None, user=Depends(current_user)):
         where, values = scope_clause(user, floor)
+        privacy, privacy_values = activity_clause(user)
+        where += " AND " + privacy
+        values += privacy_values
         with connect(cfg.database_path) as db:
             rows = db.execute(
                 f"SELECT c.*,{SUMMARY_SQL} FROM checks c JOIN check_results r ON r.check_id=c.id WHERE {where} GROUP BY c.id ORDER BY c.created DESC LIMIT 50",
@@ -236,6 +249,10 @@ def register_checks(app, cfg, current_user, collector):
             check = db.execute(
                 "SELECT * FROM checks WHERE id=?", (check_id,)
             ).fetchone()
+            if not check or not activity_visible(
+                user, check["actor_id"], check["actor_role"]
+            ):
+                raise HTTPException(404, "Verificação não encontrada.")
             where, values = scope_clause(user, floor)
             result = query_page(
                 db,
@@ -247,7 +264,7 @@ def register_checks(app, cfg, current_user, collector):
                 size,
             )
         if not check or not result["summary"]["total"]:
-            raise HTTPException(404, "Verification not found.")
+            raise HTTPException(404, "Verificação não encontrada.")
         return {**dict(check), **result}
 
     @app.get("/api/history")

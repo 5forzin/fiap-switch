@@ -15,7 +15,7 @@ class Grants(BaseModel):
     @classmethod
     def floors_exist(cls, values):
         if any(v not in FLOORS for v in values):
-            raise ValueError('Unsupported floor.')
+            raise ValueError('Andar não permitido.')
         return sorted(set(values))
 
 
@@ -24,7 +24,7 @@ class UserInput(BaseModel):
     oid: str | None = Field(default=None, max_length=100)
     email: str = Field(max_length=254)
     name: str = Field(min_length=1, max_length=100)
-    role: Literal['admin', 'monitor', 'viewer']
+    role: Literal['admin', 'support', 'monitor', 'viewer']
     enabled: bool = True
     grants: Grants = Field(default_factory=Grants)
     password: str | None = Field(default=None, max_length=128, repr=False)
@@ -32,8 +32,8 @@ class UserInput(BaseModel):
     @field_validator('password')
     @classmethod
     def strong_password(cls, value):
-        if value is not None and (len(value) < 15 or value.isspace()):
-            raise ValueError('Use at least 15 characters for the password.')
+        if value is not None and (len(value) < 8 or value.isspace()):
+            raise ValueError('A senha deve ter pelo menos 8 caracteres.')
         return value
 
     @field_validator('name')
@@ -41,7 +41,7 @@ class UserInput(BaseModel):
     def meaningful_name(cls, value):
         value = value.strip()
         if not value:
-            raise ValueError('Enter the user name.')
+            raise ValueError('Informe o nome do usuário.')
         return value
 
     @field_validator('email')
@@ -49,22 +49,28 @@ class UserInput(BaseModel):
     def domain(cls, value):
         value = value.strip().lower()
         if not re.fullmatch(r'[^\s@]+@fiap\.com\.br', value):
-            raise ValueError('Use a FIAP corporate address.')
+            raise ValueError('Use um e-mail corporativo da FIAP.')
         return value
+
+    @model_validator(mode='after')
+    def monitor_floor(self):
+        if self.role == 'monitor' and (len(self.grants.floors) != 1 or self.grants.labs or self.grants.computers):
+            raise ValueError('Selecione um único andar para o monitor.')
+        return self
 
 
 class LabInput(BaseModel):
     floor: int
     number: int = Field(ge=1, le=9)
     label: str = Field(min_length=1, max_length=80)
-    students: int = Field(ge=0, le=99)
+    students: int | None = Field(ge=0, le=99)
     include_professor: bool = True
 
     @field_validator('floor')
     @classmethod
     def floor_exists(cls, value):
         if value not in FLOORS:
-            raise ValueError('Unsupported floor.')
+            raise ValueError('Andar não permitido.')
         return value
 
 
@@ -76,7 +82,7 @@ class ComputerInput(BaseModel):
     @classmethod
     def valid_hostname(cls, value):
         if value and not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9.-]{0,251}[a-zA-Z0-9]|[a-zA-Z0-9]', value):
-            raise ValueError('Invalid hostname.')
+            raise ValueError('Nome de rede inválido.')
         return value
 
     @field_validator('mac')
@@ -86,8 +92,12 @@ class ComputerInput(BaseModel):
             return ''
         raw = re.sub('[:-]', '', value).upper()
         if not re.fullmatch('[0-9A-F]{12}', raw) or int(raw[:2], 16) & 1 or int(raw, 16) == 0:
-            raise ValueError('Enter a unicast MAC address.')
+            raise ValueError('Informe um endereço MAC unicast.')
         return ':'.join(raw[i:i+2] for i in range(0, 12, 2))
+
+
+class LabQuantityInput(BaseModel):
+    students: int | None = Field(ge=0, le=99)
 
 
 class ActionInput(BaseModel):
@@ -107,7 +117,7 @@ class Hardware(BaseModel):
     @classmethod
     def gpu_names(cls, value):
         if value and any(len(name) > 200 for name in value):
-            raise ValueError('GPU model name is too long.')
+            raise ValueError('O nome do modelo de GPU é muito longo.')
         return value
 
 
@@ -129,7 +139,7 @@ class HardwareStandard(BaseModel):
     @model_validator(mode='after')
     def configured(self):
         if self.enabled and not any(getattr(self, key) is not None and getattr(self, key) != '' for key in ('cpu_model','logical_cpus','memory_gib','storage_gib','disk_count','gpu_model')):
-            raise ValueError('Configure at least one hardware requirement.')
+            raise ValueError('Configure pelo menos um requisito de hardware.')
         return self
 
 
@@ -141,7 +151,7 @@ class CheckInput(BaseModel):
     @classmethod
     def valid_floor(cls, value):
         if value is not None and value not in FLOORS:
-            raise ValueError('Unsupported floor.')
+            raise ValueError('Andar não permitido.')
         return value
 
 
@@ -158,14 +168,14 @@ class Report(BaseModel):
     def metrics_valid(cls, value):
         allowed = {'cpu', 'memory', 'disk_free', 'uptime_hours', 'os'}
         if set(value) - allowed:
-            raise ValueError('Unsupported metric.')
+            raise ValueError('Métrica não permitida.')
         for key in ('cpu', 'memory', 'disk_free'):
             if key in value and (not isinstance(value[key], (int, float)) or not 0 <= value[key] <= 100):
-                raise ValueError('Metric out of range.')
+                raise ValueError('Métrica fora do intervalo permitido.')
         if 'uptime_hours' in value and (not isinstance(value['uptime_hours'], (int, float)) or not 0 <= value['uptime_hours'] <= 100000):
-            raise ValueError('Invalid uptime.')
+            raise ValueError('Tempo de atividade inválido.')
         if 'os' in value and (not isinstance(value['os'], str) or len(value['os']) > 120):
-            raise ValueError('Invalid OS.')
+            raise ValueError('Sistema operacional inválido.')
         return value
 
     @field_validator('mac')
@@ -196,4 +206,4 @@ class PasswordLogin(BaseModel):
 
 class PasswordChange(BaseModel):
     current_password: str = Field(min_length=1, max_length=128, repr=False)
-    new_password: str = Field(min_length=15, max_length=128, repr=False)
+    new_password: str = Field(min_length=8, max_length=128, repr=False)

@@ -27,28 +27,28 @@ class Settings(BaseSettings):
     stale_seconds: int = 120
     bootstrap_admin_email: str = ''
     bootstrap_admin_password_hash: str = Field(default='', repr=False)
-    bootstrap_admin_name: str = 'Administrator'
+    bootstrap_admin_name: str = 'Administrador'
 
     @property
     def sso_ready(self):
         return all((self.entra_tenant_id, self.entra_client_id, self.entra_client_secret))
 
     def validate_runtime(self):
-        if len(self.session_secret) < 32 or self.session_secret.startswith('replace-'):
-            raise ValueError('SESSION_SECRET must contain at least 32 characters.')
+        if len(self.session_secret) < 32 or self.session_secret.startswith(('replace-', 'substitua-')):
+            raise ValueError('SESSION_SECRET deve ter pelo menos 32 caracteres.')
         if self.environment == 'production':
             if not self.cookie_secure or urlparse(self.base_url).scheme != 'https':
-                raise ValueError('Production requires HTTPS and secure cookies.')
-            if len(self.collector_token) < 32 or self.collector_token.startswith('replace-'):
-                raise ValueError('COLLECTOR_TOKEN must contain at least 32 characters.')
+                raise ValueError('Produção exige HTTPS e cookies seguros.')
+            if len(self.collector_token) < 32 or self.collector_token.startswith(('replace-', 'substitua-')):
+                raise ValueError('COLLECTOR_TOKEN deve ter pelo menos 32 caracteres.')
         if self.entra_tenant_id:
             UUID(self.entra_tenant_id)
         if self.bootstrap_admin_oid:
             UUID(self.bootstrap_admin_oid)
         if self.auth_mode == 'entra' and not self.sso_ready:
-            raise ValueError('Entra authentication requires the tenant, client ID, and client secret.')
+            raise ValueError('A autenticação Entra exige tenant ID, client ID e client secret.')
         if self.bootstrap_admin_email and not self.bootstrap_admin_email.lower().endswith('@fiap.com.br'):
-            raise ValueError('BOOTSTRAP_ADMIN_EMAIL must use the FIAP domain.')
+            raise ValueError('BOOTSTRAP_ADMIN_EMAIL deve usar o domínio da FIAP.')
         Path(self.database_path).parent.mkdir(parents=True, exist_ok=True)
 
 

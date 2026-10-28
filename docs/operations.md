@@ -1,35 +1,51 @@
-# Operations
+# Operação do FIAP Switch
 
-The website runs on Contabo. A single controller inside the FIAP LAN polls the website over HTTPS, runs fixed WinRM commands, and sends health reports. No software is installed on laboratory computers. No inbound connection from the internet to the FIAP LAN is required.
+## Arquitetura na FIAP
 
-## Accounts
+O site roda na Contabo. Um único controlador no servidor da LAN consulta a fila por HTTPS, executa comandos fixos por WinRM e envia as leituras. Os computadores dos laboratórios usam os recursos nativos do Windows. A rede interna não precisa aceitar conexões de entrada da internet.
 
-Set `AUTH_MODE=local` (the default). After filling the private `.env`, create the first administrator interactively:
+O acesso do servidor aos IPs permite consultar, reiniciar e desligar por WinRM. Para ligar, Wake-on-LAN depende do suporte da placa de rede, da configuração de BIOS/UEFI e da passagem dos pacotes pelos switches. Se os andares estiverem em VLANs diferentes, valide encaminhamento de broadcast ou retransmissor com a equipe de redes.
+
+## Contas e permissões
+
+O modo padrão é `AUTH_MODE=local`. Após preencher o ambiente privado, crie o primeiro administrador:
 
 ```sh
-docker compose exec web python -m scripts.create_admin --email admin@fiap.com.br --name Administrator
+docker compose exec web python -m scripts.create_admin --email admin@fiap.com.br --name Administrador
 ```
 
-Passwords belong to this application, independently of the FIAP domain password. The administrator creates accounts in **User access**, assigns a role and floors/laboratories/computers, and can reset passwords or disable accounts. Email addresses must use `@fiap.com.br`. There is no public signup or preset password. Users change their own passwords with the key button in the header.
+A senha pertence à aplicação e é independente da senha do domínio. Em **Acessos**, o administrador cadastra usuários com e-mail `@fiap.com.br`, define o perfil e escolhe um único andar para cada monitor. Também pode redefinir senhas, desativar e excluir contas. Não há cadastro público nem senha predefinida.
 
-New passwords require 15–128 characters. Salted scrypt hashes use N=65536, r=8, p=2. Login attempts are limited to five per IP and ten per account in 15 minutes; successful authentication clears that IP/account's attempts. Session cookies are signed, HttpOnly, Secure, and SameSite=Lax, with an eight-hour lifetime. Writes require a same-origin request and a session CSRF token. Password changes, administrative resets, grant changes, and account disablement revoke existing sessions. Queued commands recheck current permissions before delivery.
+| Perfil        | Permissão                                              |
+| ------------- | ------------------------------------------------------ |
+| Administrador | Operação completa e gerenciamento de contas.           |
+| Monitor       | Consulta, verificação e comandos somente em seu andar. |
+| Suporte       | Operação completa, sem gerenciamento de contas.        |
 
-The deployment migrates the prior administrator password hash into the account credential table and upgrades its hash on successful login. It preserves the account ID, grants, and audit history. Existing databases marked as demonstration data cannot run in production.
+Senhas exigem 8–128 caracteres e usam scrypt com sal, `N=65536`, `r=8`, `p=2`. Há limite de cinco tentativas por IP e dez por conta em 15 minutos. O sucesso limpa as tentativas daquele IP/conta. Cookies de sessão são assinados, HttpOnly, Secure e SameSite=Lax, com validade de oito horas. Escritas exigem mesma origem e token CSRF.
 
-## Optional corporate SSO
+Alterar ou redefinir senha, modificar permissões ou desativar uma conta revoga as sessões. A fila confere novamente a permissão atual antes de entregar cada comando. Lotes com qualquer computador não autorizado são rejeitados integralmente.
 
-Set `AUTH_MODE=entra` only after FIAP IT registers a single-tenant Microsoft Entra web application. The FIAP discovery endpoint resolves to tenant `11dbbfe2-89b8-4549-be10-cec364e59551`.
+A exclusão remove credenciais e sessões e retira a conta da lista ativa. O registro de autoria é preservado para manter a integridade da fila e da auditoria.
 
-1. Register the exact HTTPS redirect URI: `https://<your-host>/auth/callback`.
-2. Set `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, and `ENTRA_CLIENT_SECRET` in the private environment.
-3. Set `BOOTSTRAP_ADMIN_OID` to the initial administrator's directory object ID, then restart the website.
-4. Add users by their FIAP directory object ID and corporate email in **User access**.
+Ações de administrador são visíveis somente à própria conta. Suporte acompanha ações de suporte e monitores. O monitor acompanha suas próprias ações e os eventos automáticos de seus equipamentos. A privacidade também cobre comandos enviados pelo controlador e verificações salvas; a autoria e o perfil são registrados no momento da ação.
 
-Authlib validates the OIDC signatures, issuer, audience, state, nonce, and PKCE. The tenant ID and object ID identify the authorized principal; the email suffix alone does not grant access. In Entra mode, local passwords and local sessions are rejected. Account grants remain administrator-managed.
+A migração de contas antigas preserva ID, credenciais, sessões e auditoria. Bancos marcados como dados de demonstração antigos não podem ser abertos em produção.
 
-## LAN controller
+## SSO corporativo opcional
 
-Install Python 3.12+ on the server in the FIAP LAN. Linux and Windows are supported.
+Ative `AUTH_MODE=entra` somente após a TI registrar uma aplicação web no Microsoft Entra da FIAP. O diretório identificado na descoberta corporativa é `11dbbfe2-89b8-4549-be10-cec364e59551`.
+
+1. Cadastre a URL exata de retorno: `https://<seu-host>/auth/callback`.
+2. Preencha `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID` e `ENTRA_CLIENT_SECRET` no ambiente privado.
+3. Defina `BOOTSTRAP_ADMIN_OID` com o ID do objeto do administrador inicial e reinicie o site.
+4. Em **Acessos**, cadastre usuários pelos IDs de objeto do diretório e e-mails corporativos.
+
+Authlib valida assinatura, emissor, audiência, estado, nonce e PKCE. A autorização usa o diretório e o ID do objeto; o sufixo do e-mail sozinho não concede acesso. No modo Entra, senhas e sessões locais são recusadas.
+
+## Controlador da LAN
+
+Instale Python 3.12+ no servidor Windows ou Linux com acesso aos laboratórios:
 
 ```powershell
 python -m venv .venv
@@ -38,99 +54,106 @@ Copy-Item collector/.env.example .env.collector
 .venv\Scripts\python -m collector.service
 ```
 
-On Linux, use `.venv/bin/python` and the provided systemd service. On Windows, create a Task Scheduler task that starts `python -m collector.service` at boot with the repository as its working directory. Run it under the dedicated service account. Set **Do not start a new instance** and restart on failure. Keep `.env.collector` readable only by that account and administrators.
+No Linux, use `.venv/bin/python` e o serviço systemd em `infra/`. No Windows, configure o Agendador de Tarefas para iniciar `python -m collector.service` na inicialização, com a raiz do repositório como diretório de trabalho. Use a conta de serviço autorizada, impeça execuções duplicadas e configure reinicialização em caso de falha. Restrinja `.env.collector` à conta de serviço e aos administradores.
 
-Configure `SWITCH_URL`, the matching `COLLECTOR_TOKEN`, `WINRM_USERNAME`, and `WINRM_PASSWORD`. These stay on the controller. Use a dedicated domain service account with only the required remote management and shutdown rights. Validate any Just Enough Administration endpoint against the fixed health and shutdown scripts before rollout.
+Preencha `SWITCH_URL`, `COLLECTOR_TOKEN`, `WINRM_USERNAME` e `WINRM_PASSWORD`. O token deve corresponder ao configurado no site. Use uma conta do domínio dedicada, com os direitos necessários para gerenciamento remoto e desligamento. Se utilizar Just Enough Administration, valide os comandos fixos antes da implantação.
 
-Default: WinRM HTTPS on 5986 with NTLM, message encryption, and certificate verification. `WINRM_CA_BUNDLE` accepts a PEM bundle for the institution's certificate authority. For Kerberos, install `pywinrm[kerberos]`, configure the domain's Kerberos environment and service-account ticket renewal, and register DNS hostnames that resolve to each inventory IP. Kerberos permits HTTP on 5985 with message encryption. The implementation never disables TLS validation, enables Basic authentication, or configures wildcard TrustedHosts.
+O padrão é WinRM HTTPS na porta `5986`, NTLM, criptografia das mensagens e validação do certificado. `WINRM_CA_BUNDLE` aceita PEM com a autoridade certificadora da instituição. Para Kerberos, instale `pywinrm[kerberos]`, configure domínio, renovação dos tíquetes da conta de serviço e nomes DNS que resolvam para o IP cadastrado. Kerberos permite HTTP na porta `5985` com criptografia das mensagens.
 
-Register laboratories and MAC addresses before issuing Wake-on-LAN. Successful health probes fill missing MAC addresses using the default-gateway adapter and preserve an already registered MAC. Review it if a workstation has multiple network interfaces. The controller restricts all targets and broadcast addresses to `ALLOWED_CIDRS`.
+A implementação não desativa validação TLS, não habilita autenticação Basic e não usa TrustedHosts com curinga.
 
-Wake-on-LAN requires firmware/NIC support and suitable VLAN routing. The server's access to an IP does not imply it can send a directed broadcast into that VLAN. Coordinate directed broadcasts with FIAP networking. EC2 does not emulate physical Wake-on-LAN; AWS tests validate packet construction, WinRM monitoring, restart, and shutdown separately.
+Cadastre os MACs antes de usar Wake-on-LAN. Uma leitura bem-sucedida preenche MACs ausentes usando o adaptador com rota padrão e preserva os já cadastrados. Confira a seleção em máquinas com múltiplas interfaces. `ALLOWED_CIDRS` limita IPs, nomes resolvidos e broadcasts.
 
-## Inventory and addressing
+## Inventário e endereçamento
 
-Supported floors: 1, 2, 3, 4, 5, 6, 7, 10, 11. Laboratory number is 1–9 within each floor; this preserves the concatenated third-octet convention without collisions.
+Andares permitidos: **1, 2, 3, 4, 5, 6, 7, 10 e 11**. Cada andar aceita salas de 1 a 9, preservando o terceiro octeto concatenado sem colisões.
 
-| Laboratory | Subnet | Student example | Professor |
-| --- | --- | --- | --- |
-| 301 | 10.3.31.0/24 | 10.3.31.1 | 10.3.31.100 |
-| 202 | 10.3.22.0/24 | 10.3.22.1 | 10.3.22.100 |
-| 1001 | 10.3.101.0/24 | 10.3.101.1 | 10.3.101.100 |
+| Sala | Rede            | Aluno        | Professor      |
+| ---- | --------------- | ------------ | -------------- |
+| 301  | `10.3.31.0/24`  | `10.3.31.1`  | `10.3.31.100`  |
+| 202  | `10.3.22.0/24`  | `10.3.22.1`  | `10.3.22.100`  |
+| 1001 | `10.3.101.0/24` | `10.3.101.1` | `10.3.101.100` |
 
-The lab wizard creates PCs 1 through the entered student count, plus the optional professor PC 100. It starts with unknown state and does not scan networks outside the inventory.
+O cadastro cria alunos a partir de `.1`, até a quantidade informada, e opcionalmente o professor `.100`. A opção **Indefinido** permite cadastrar a sala sem informar o total de alunos. Em **Configurar sala → Computadores**, é possível manter esse estado ou definir a quantidade depois, preservando os equipamentos existentes. A quantidade definida não pode ser menor que o cadastro atual. O estado inicial dos equipamentos é não verificado. O controlador consulta apenas o inventário autorizado.
 
-## State and commands
+## Estado e comandos
 
-The overview shows floor summaries without rendering every computer. Opening **Computers** selects the first accessible floor and its first laboratory. Changing the floor selects its first laboratory automatically. An explicit **All assigned floors** selection is available for authorized cross-floor operations; tables remain paginated.
+A visão geral resume os andares sem renderizar cada computador. **Computadores** abre no primeiro andar acessível e em sua primeira sala. Trocar de andar seleciona sua primeira sala. **Todos os andares permitidos** habilita operações entre andares quando autorizadas; a lista continua paginada.
 
-- **Online:** WinRM returned a valid health report.
-- **Unreachable:** WinRM could not verify the computer. This does not prove the computer is powered off.
-- **Unknown:** no report, or the last report is older than 120 seconds.
+- **Ligado:** o WinRM retornou uma leitura válida.
+- **Sem resposta:** a consulta falhou; isso não comprova desligamento elétrico.
+- **Não verificado:** não há leitura ou ela tem mais de 120 segundos.
 
-Every command is authorized server-side against the current user grants. Mixed unauthorized batches are rejected in full. Commands use an idempotency key, expire after five minutes before delivery, and have a two-minute execution lease. An expired lease is marked failed with unknown outcome and is never automatically retried.
+Comandos usam chave de idempotência, expiram após cinco minutos na fila e têm prazo de execução de dois minutos. Se o prazo de execução expirar, o resultado é incerto e o comando não é repetido automaticamente.
 
-Shut down and restart schedule a 60-second Windows notice. Windows scheduled shutdown implies forced application termination at the end of that notice; users must save their work. The UI requires confirmation. **Delivered** means Windows accepted the command or a Wake-on-LAN packet was sent. Actual reachability comes from the next probe.
+Reiniciar e desligar programam aviso de 60 segundos no Windows. Ao final, aplicativos podem ser encerrados à força; os usuários precisam salvar o trabalho. A interface exige confirmação. **Enviado** significa que o Windows aceitou o comando ou que o pacote Wake-on-LAN foi enviado. A confirmação de estado vem da próxima leitura.
 
-## Floor checks and daily history
+## Verificações e histórico diário
 
-Use **Checks & history** to request a fresh verification for a floor, or all assigned floors. The controller wakes its monitoring cycle, probes the computers, and saves each result. Identical pending requests are reused. Completed verification results are immutable, including the hardware measured during that verification. A verification expires after 15 minutes if the controller cannot finish it.
+Em **Verificações e histórico**, solicite uma leitura nova para um andar ou para todos os andares permitidos. O controlador antecipa seu ciclo e salva os resultados. Solicitações pendentes idênticas são reutilizadas. Verificações concluídas são imutáveis, inclusive o hardware observado. A solicitação expira após 15 minutos se não for concluída.
 
-Every real controller report also updates the current day's observation for that computer, using `America/Sao_Paulo`. A new daily record is created automatically on the first observation of each day. Daily history keeps the latest status, first and latest observation times, last confirmed online time, and hardware result. No record is fabricated for a day without observations. Historical results remain subject to the user's current floor, laboratory, and computer grants; results are paginated on the server.
+Cada leitura real atualiza o registro diário em `America/Sao_Paulo`. A primeira do dia cria o registro. São preservados situação mais recente, primeira e última consulta, última resposta confirmada e avaliação do hardware. Dias sem leituras não recebem registros artificiais. As permissões atuais também restringem o histórico; resultados são paginados no servidor.
 
-**No response** identifies computers whose WinRM health could not be verified. A missing network response cannot establish that electrical power is off. **Not verified** identifies missing or stale observations. Both the UI and saved results include observation times so that old data is not presented as a fresh verification.
+## Padrões de hardware
 
-## Hardware standards
+Em **Inventário**, selecione o andar, abra **Configurar sala** e use a aba **Padrão de hardware**. Escolha um computador conforme da própria sala em **Computador de referência** e clique em **Copiar hardware do computador** para preencher os requisitos. Em salas ainda sem padrão, uma leitura atual pode servir de referência inicial. Computadores sem resposta ou com leitura antiga não são oferecidos para clonagem. Requisitos opcionais: modelo de CPU, CPUs lógicas, RAM, armazenamento físico total, quantidade de discos e modelo de GPU. Os modelos usam busca parcial sem diferenciar maiúsculas. Capacidades são informadas em GiB.
 
-In **Inventory**, select a floor and set each laboratory's hardware standard. Optional requirements cover CPU model, logical CPU count, RAM, total physical storage, disk count, and GPU model. Model requirements use case-insensitive substring matching. Capacities are expressed in GiB.
+**Inventário exato** compara quantidades e capacidades cadastradas. **Capacidades mínimas** aceita valores iguais ou superiores. RAM e armazenamento têm tolerância de 5% para considerar a capacidade utilizável. Campos vazios são ignorados. A ausência de leitura obrigatória nunca produz conformidade.
 
-**Exact inventory** compares configured counts and capacities; **Minimum capacities** accepts values at or above the configured capacities. RAM and storage allow a 5% tolerance in both modes to account for reported usable capacity. Empty requirements are ignored. Missing required telemetry is marked unverified and cannot produce a successful match.
+A primeira divergência abre uma ocorrência datada. Leituras seguintes mantêm a data inicial. Uma leitura conforme registra a resolução. Padrão esperado, hardware detectado, diferenças e resolução permanecem no histórico. Desativar um padrão é registrado separadamente de obter conformidade. Alterar o padrão exige nova leitura.
 
-Real WinRM/CIM observations create a hardware incident on the first mismatch, preserve its detection time through subsequent mismatches, and record when fresh data resolves it. The expected standard, detected hardware, differences, and resolution remain in the incident history. Disabling a standard is recorded separately from a successful hardware match. Changing the standard requires a new observation before the current result is confirmed.
+Antes da negociação WinRM, o controlador verifica TCP com prazo curto. Resultados são enviados em lotes à medida que terminam, evitando bloqueio por máquinas sem resposta. `TCP_CONNECT_TIMEOUT` vale dois segundos por padrão e aceita de 0,5 a 10 segundos.
 
-The collector uses a short TCP connectivity check before WinRM negotiation and sends completed probes in batches as they arrive, preventing unresponsive machines from blocking earlier healthy results. `TCP_CONNECT_TIMEOUT` defaults to two seconds; its allowed runtime range is 0.5–10 seconds.
+## Hospedagem e backup
 
-## Hosting and backup
+Copie `.env.example` para `.env`, preencha a configuração privada, execute `docker compose up -d --build` e crie o administrador. O contêiner deve ouvir somente em loopback, atrás de Caddy ou outro proxy HTTPS. Ele usa usuário sem privilégios, sistema de arquivos somente para leitura e volume próprio para SQLite. Execute uma única réplica web.
 
-Copy `.env.example` to `.env`, fill in private configuration, then run `docker compose up -d --build` and create the first administrator. Bind the container to loopback and place it behind Caddy or another HTTPS proxy. The container runs as a non-root user with a read-only filesystem and a dedicated SQLite data volume. Use one web replica; SQLite queues are transactional and persistent.
+Use a API de backup on-line do SQLite; não copie um banco em uso com WAL diretamente. Guarde também o ambiente privado em local seguro. Rotacione o token nas duas pontas. Defina retenção de auditoria e backups com a TI.
 
-Back up SQLite with its online backup API, not by copying a live WAL database. Retain the deployment's `.env` in a secure backup. Rotate the controller token on both ends together. Restrict host administration and review command/audit retention with FIAP IT.
+## Laboratório Windows na AWS
 
-## Disposable AWS laboratory
-
-Authenticate using `aws login --profile fiap-switch --region sa-east-1`. No permanent access key is required.
+O ambiente tem controlador Windows em `10.3.31.10`, aluno em `10.3.31.4` e professor em `10.3.22.100`. Todos usam Windows Server 2022, discos EBS criptografados e IMDSv2. WinRM aceita apenas tráfego privado entre as instâncias. SSM administra o laboratório; não é um agente da aplicação instalado na FIAP.
 
 ```powershell
-python -m pip install -r requirements-dev.txt
-python infra/aws_lab.py provision
-python infra/aws_lab.py status
-python -m scripts.e2e_remote
-python infra/aws_lab.py stop
-python infra/aws_lab.py destroy
+aws login --profile fiap-switch --region us-east-2
+.venv\Scripts\python infra/aws_lab.py provision --region us-east-2 --state runtime/aws-validation-20261027.json --name fiap-switch-e2e-20261027 --windows-controller --targets 2
+.venv\Scripts\python infra/aws_lab.py status --state runtime/aws-validation-20261027.json
 ```
 
-Provisioning uses one Linux t3.micro controller and one Windows Server 2022 t3.small target, private WinRM access, SSM administration, encrypted EBS, and IMDSv2. AWS reserves subnet addresses `.0`–`.3`; the target uses `10.3.31.11`. A generated local password and resource IDs stay in ignored `runtime/aws-lab.json`. The Windows local-account policy is used only in this disposable lab, not in the FIAP domain configuration.
+Não execute `provision` se o arquivo já descreve um laboratório existente. O script registra os recursos criados para recuperação e remoção direcionada. O provisionamento antigo usa controlador Linux e um alvo Windows; mantenha arquivos de estado distintos.
 
-For an entirely Windows laboratory across two floors, use a separate state file:
+O instalador Python tem sua assinatura oficial verificada. O controlador Windows roda como tarefa de inicialização, com configurações restritas a SYSTEM e administradores. Certificados WinRM incluem IP privado e DNS.
+
+`scripts/apresentacao.py` prepara salas e contas usando o ambiente já registrado. Senhas ficam exclusivamente em `runtime/apresentacao.json`. A ação `suporte` prepara a conta de suporte e atualiza o arquivo privado de acessos. A ação `hardware` anexa um disco real de 8 GiB à máquina `301-4`, preservando o padrão de 30 GiB e um disco; o volume é criptografado e configurado para exclusão junto com a instância. O controlador continua usando WinRM e Wake-on-LAN; não aciona energia pela API da AWS.
+
+**Mantenha as três instâncias ligadas para a apresentação solicitada.** Não execute limpeza ou desligamento ao concluir a validação desse ambiente. Após o responsável encerrar seu uso:
 
 ```powershell
-python infra/aws_lab.py provision --region us-east-2 --state runtime/aws-validation-20261027.json --name fiap-switch-e2e-20261027 --windows-controller --targets 2
+.venv\Scripts\python infra/aws_lab.py stop --state runtime/aws-validation-20261027.json
+.venv\Scripts\python infra/aws_lab.py destroy --state runtime/aws-validation-20261027.json
 ```
 
-This creates a Windows controller at `10.3.31.10`, a student workstation at `10.3.31.4`, and a professor workstation at `10.3.22.100`. WinRM certificates include private IP and DNS SANs. The Windows controller bootstrap verifies the Python installer's signature; its collector runs as a startup scheduled task with private configuration restricted to SYSTEM and administrators. `scripts/live_validation.py` and `scripts/validate_features.py` exercise the deployed HTTPS API and actual Windows transitions. Local validation uses the authorized SOCKS5 endpoint at `127.0.0.1:1080`; `scripts/browser_gateway.py` forwards the UI through that proxy while validating upstream TLS and preserving production cookie settings. The gateway binds only to loopback and is a test tool.
+`stop` preserva discos EBS cobrados. `destroy` remove instâncias, volumes e recursos deste laboratório. Nunca opere recursos externos ao arquivo de estado conferido.
 
-The account may restrict instance types to its Free Tier eligible set. `t3.small` was accepted for the Windows target during validation. If provisioning fails partway through, inspect the recorded resource state and destroy it before creating another lab. `stop` leaves chargeable EBS volumes; `destroy` removes all owned resources and volumes.
+A AWS reserva `.0` a `.3`, por isso o aluno usa `.4`. VPC não oferece broadcast e EC2 desligada não recebe Wake-on-LAN. A validação comprova pacotes emitidos, WinRM e desligamentos/reinicializações; ligar fisicamente exige a LAN do campus.
 
-The remote E2E harness requires ignored website credentials in `runtime/login.json`, the lab state, and authorized SSH access to Contabo. It starts the controller, checks live WinRM telemetry over the deployed HTTPS API, issues restart and shutdown through the queue, and verifies a changed Windows boot time and the EC2 stopped state. Its laboratory is labeled **AWS validation**, with synthetic unused PCs alongside the actual EC2 target. Remove this inventory fixture after validation and destroy the test resources.
+## Acesso local pelo proxy
 
-## References
+O ambiente autorizado usa SOCKS5 em `127.0.0.1:1080`. Para acessar pelo navegador:
 
-- [Microsoft OIDC](https://learn.microsoft.com/en-us/entra/identity-platform/v2-protocols-oidc)
-- [Microsoft token claims](https://learn.microsoft.com/en-us/entra/identity-platform/id-token-claims-reference)
-- [WinRM security](https://learn.microsoft.com/en-us/powershell/scripting/learn/remoting/winrmsecurity)
+```powershell
+.venv\Scripts\python -m scripts.browser_gateway
+```
+
+Abra [localhost:8011](http://localhost:8011). Esse acesso ouve somente em loopback, encaminha ao HTTPS publicado pelo SOCKS5 e preserva validação TLS e cookies de produção. É uma ferramenta local de acesso, sem dados fictícios.
+
+Os testes remotos usam credenciais privadas em `runtime/login.json`, estado do laboratório e SSH autorizado à Contabo. As verificações reproduzíveis estão em `scripts/live_validation.py` e `scripts/validate_features.py`. Rotinas de falha, expiração, desligamento e limpeza alteram o ambiente: execute-as apenas quando ele não estiver reservado para apresentação.
+
+## Referências
+
+- [OIDC do Microsoft Entra](https://learn.microsoft.com/en-us/entra/identity-platform/v2-protocols-oidc)
+- [Segurança do WinRM](https://learn.microsoft.com/en-us/powershell/scripting/learn/remoting/winrmsecurity)
 - [pywinrm](https://github.com/diyan/pywinrm)
-- [AWS CLI console sign-in](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html)
-- [AWS subnet reservations and broadcast limitations](https://docs.aws.amazon.com/vpc/latest/userguide/subnet-sizing.html)
-
-- [OWASP password storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)
-- [NIST authentication requirements](https://pages.nist.gov/800-63-4/sp800-63b.html)
+- [Autenticação da AWS CLI pelo console](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html)
+- [Reservas de endereços e limitação de broadcast na AWS](https://docs.aws.amazon.com/vpc/latest/userguide/subnet-sizing.html)
+- [Armazenamento de senhas — OWASP](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)

@@ -9,7 +9,7 @@ if (-not (Get-LocalGroupMember -Group 'Administrators' | Where-Object Name -Like
 Enable-PSRemoting -Force
 Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $false
 Set-Item WSMan:\localhost\Service\Auth\Basic -Value $false
-# The disposable lab uses a local account; production uses a domain service account.
+# O laboratório usa uma conta local; na FIAP, use uma conta de serviço do domínio.
 New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name LocalAccountTokenFilterPolicy -Value 1 -PropertyType DWord -Force
 $targetIp = '10.3.31.1'
 $dns = (Resolve-DnsName $targetIp -Type PTR).NameHost.TrimEnd('.')

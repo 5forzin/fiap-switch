@@ -1,5 +1,5 @@
 [Unit]
-Description=FIAP Switch LAN controller
+Description=Controlador da LAN do FIAP Switch
 After=network-online.target
 Wants=network-online.target
 

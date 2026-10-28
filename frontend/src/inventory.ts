@@ -3,6 +3,11 @@ export type Api = <T>(
   method?: string,
   body?: unknown,
 ) => Promise<T>;
+export const quantidade = (
+  valor: number,
+  singular: string,
+  plural = `${singular}s`,
+) => `${valor.toLocaleString("pt-BR")} ${valor === 1 ? singular : plural}`;
 export type Hardware = {
   cpu_model?: string;
   logical_cpus?: number;

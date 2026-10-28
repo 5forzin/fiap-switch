@@ -78,13 +78,14 @@ def test_domain_and_self_lockout(client):
     assert client.put('/api/users', json=payload).status_code == 409
 
 
-def test_machine_specific_access_and_revocation(client):
+def test_monitor_floor_reassignment(client):
     login(client)
-    response = client.put('/api/users', json={'id': 'test-monitor', 'email': 'monitor@fiap.com.br', 'name': 'Monitor', 'role': 'monitor', 'grants': {'computers': ['201-100']}})
+    response = client.put('/api/users', json={'id': 'test-monitor', 'email': 'monitor@fiap.com.br', 'name': 'Monitor', 'role': 'monitor', 'grants': {'floors': [2]}})
     assert response.status_code == 200
     login(client, 'monitor')
-    assert [c['id'] for c in client.get('/api/dashboard').json()['computers']] == ['201-100']
+    assert {c['floor'] for c in client.get('/api/dashboard').json()['computers']} == {2}
     assert action(client, ['301-1']).status_code == 403
+    assert action(client, ['201-100']).status_code == 200
 
 
 def test_correct_ip_mapping_and_professor(client):
@@ -165,7 +166,7 @@ def test_legacy_demo_database_cannot_be_reused_in_production(client):
     cfg = client.app.state.settings
     with connect(cfg.database_path) as db:
         db.execute("UPDATE metadata SET value='demo' WHERE key='mode'")
-    with pytest.raises(ValueError, match='separate databases'):
+    with pytest.raises(ValueError, match='bancos de dados separados'):
         with TestClient(create_app(cfg)):
             pass
 

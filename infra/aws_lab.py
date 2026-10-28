@@ -1,4 +1,4 @@
-"""Provision an isolated WinRM test lab. State and credentials stay in runtime/."""
+"""Cria um laboratório WinRM isolado. Estado e credenciais ficam em runtime/."""
 import argparse
 import json
 import secrets
@@ -24,7 +24,7 @@ def save(state):
 
 def provision(windows_controller=False, target_count=1):
     if STATE.exists():
-        raise SystemExit('Existing lab state found. Inspect or destroy that lab before provisioning.')
+        raise SystemExit('Já existe um laboratório registrado. Consulte ou remova esse ambiente antes de criar outro.')
     ec2, iam, ssm = clients()
     state = {'region': REGION, 'instances': [], 'created': time.time(), 'controller_platform': 'windows' if windows_controller else 'linux', 'targets': []}
     save(state)
@@ -55,7 +55,7 @@ def provision(windows_controller=False, target_count=1):
     save(state)
     ec2.create_route(RouteTableId=table, DestinationCidrBlock='0.0.0.0/0', GatewayId=gateway)
     ec2.associate_route_table(RouteTableId=table, SubnetId=subnet)
-    group = ec2.create_security_group(GroupName=NAME, Description='Private WinRM lab; no public inbound access', VpcId=vpc)['GroupId']
+    group = ec2.create_security_group(GroupName=NAME, Description='Laboratório WinRM privado, sem portas públicas de entrada', VpcId=vpc)['GroupId']
     state['group'] = group
     save(state)
     ec2.authorize_security_group_ingress(GroupId=group, IpPermissions=[{'IpProtocol': 'tcp', 'FromPort': 5986, 'ToPort': 5986, 'UserIdGroupPairs': [{'GroupId': group}]}])
@@ -80,7 +80,7 @@ def provision(windows_controller=False, target_count=1):
             state['subnets'].append(target_subnet)
             save(state)
         nodes.append(('windows' if index == 0 else 'windows2', windows_ami, 't3.small', ip, windows_script(ip), target_subnet))
-    # IAM propagation is eventually consistent. Retry only the pre-instance validation.
+    # A propagação do IAM é gradual. Repita somente a validação anterior à criação da instância.
     for kind, ami, instance_type, ip, script, node_subnet in nodes:
         for attempt in range(12):
             try:
@@ -101,14 +101,14 @@ def provision(windows_controller=False, target_count=1):
                 if 'instance profile' not in str(error).lower() or attempt == 11:
                     raise
                 time.sleep(5)
-    print('Provisioned. Use status, send, stop, or destroy.', flush=True)
+    print('Laboratório criado. Use status, send, stop ou destroy.', flush=True)
 
 
 def command(ssm, instance, script, windows=False, timeout=180):
     response = ssm.send_command(InstanceIds=[instance], DocumentName='AWS-RunPowerShellScript' if windows else 'AWS-RunShellScript',
         Parameters={'commands': [script], 'executionTimeout': [str(timeout)]}, TimeoutSeconds=timeout)
     command_id = response['Command']['CommandId']
-    print(f'Command: {command_id}', flush=True)
+    print(f'Comando: {command_id}', flush=True)
     return command_id
 
 
@@ -138,7 +138,7 @@ def main():
         print('SSM:', [(i['InstanceId'], i['PingStatus']) for i in ssm.describe_instance_information()['InstanceInformationList'] if i['InstanceId'] in state['instances']])
     elif args.action == 'stop':
         ec2.stop_instances(InstanceIds=state['instances'])
-        print('Stop requested for all lab instances.')
+        print('Desligamento solicitado para todas as instâncias do laboratório.')
     elif args.action == 'send':
         command(ssm, state[args.target], Path(args.script).read_text(), args.target.startswith('windows') or state.get('controller_platform')=='windows')
     elif args.action == 'destroy':
@@ -164,7 +164,7 @@ def main():
             iam.delete_role(RoleName=state['role'])
         state['destroyed'] = time.time()
         save(state)
-        print('All owned lab resources destroyed.')
+        print('Todos os recursos deste laboratório foram removidos.')
 
 
 if __name__ == '__main__':

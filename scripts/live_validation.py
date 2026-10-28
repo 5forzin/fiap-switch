@@ -1,4 +1,4 @@
-"""Helpers for repeatable live Windows/HTTPS validation; private state stays in runtime/."""
+"""Apoio à validação real de Windows por HTTPS; dados privados ficam em runtime/."""
 
 import json
 import subprocess
@@ -34,7 +34,7 @@ class Validation:
             "evidence": evidence,
         }
         self.save()
-        print(f"PASS: {name}", flush=True)
+        print(f"APROVADO: {name}", flush=True)
 
     @contextmanager
     def client(self, account=None):
@@ -111,10 +111,10 @@ class Validation:
                 return result["StandardOutputContent"].strip()
             if result["Status"] in ("Failed", "Cancelled", "TimedOut"):
                 raise RuntimeError(
-                    f"SSM command {command_id}: {result['Status']}. Inspect its bounded diagnostics."
+                    f"Comando SSM {command_id}: {result['Status']}. Consulte o diagnóstico resumido."
                 )
             time.sleep(3)
-        raise TimeoutError(f"SSM command {command_id} timed out.")
+        raise TimeoutError(f"Comando SSM {command_id} excedeu o tempo limite.")
 
     def powershell(self, instance, script, timeout=180):
         return self.wait_command(

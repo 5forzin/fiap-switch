@@ -20,13 +20,16 @@ import {
   Search,
   Server,
   Settings2,
+  Trash2,
   Users,
   X,
 } from "lucide-react";
 import "./style.css";
 import { ChecksPanel } from "./ChecksPanel";
 import { HardwareStandardForm } from "./HardwareStandardForm";
+import { LabQuantityForm, QuantityFields } from "./LabQuantityForm";
 import type { Hardware, HardwareStandard } from "./inventory";
+import { quantidade } from "./inventory";
 
 type User = {
   id: string;
@@ -78,6 +81,7 @@ type Lab = {
   subnet: string;
   broadcast: string;
   hardware_standard?: HardwareStandard | null;
+  student_count: number | null;
 };
 type Job = {
   id: string;
@@ -88,6 +92,7 @@ type Job = {
   created: number;
   finished: number | null;
   message: string;
+  actor_name?: string;
 };
 type Dashboard = {
   computers: PC[];
@@ -99,6 +104,7 @@ type Dashboard = {
 type Audit = {
   id: number;
   actor: string;
+  actor_name?: string | null;
   action: string;
   target: string;
   created: number;
@@ -107,27 +113,54 @@ type Audit = {
 type View =
   "overview" | "computers" | "activity" | "access" | "inventory" | "checks";
 const labels: Record<string, string> = {
-  online: "Online",
-  offline: "Offline",
-  unreachable: "No response",
-  unknown: "Unknown",
-  wake: "Power on",
-  shutdown: "Shut down",
-  restart: "Restart",
-  queued: "Queued",
-  running: "Running",
-  completed: "Delivered",
-  failed: "Failed",
+  online: "Ligado",
+  offline: "Desligado",
+  unreachable: "Sem resposta",
+  unknown: "Não verificado",
+  wake: "Ligar",
+  shutdown: "Desligar",
+  restart: "Reiniciar",
+  queued: "Na fila",
+  running: "Em execução",
+  completed: "Enviado",
+  failed: "Falhou",
+  admin: "Administrador",
+  support: "Suporte",
+  monitor: "Monitor",
+  viewer: "Observador",
+  login: "Entrada",
+  password_changed: "Senha alterada",
+  password_reset: "Senha redefinida",
+  user_created: "Usuário cadastrado",
+  user_updated: "Usuário atualizado",
+  user_deleted: "Conta excluída",
+  lab_quantity_updated: "Quantidade de computadores atualizada",
+  lab_created: "Laboratório cadastrado",
+  computer_updated: "Computador atualizado",
+  command_revoked: "Comando revogado",
+  lease_expired: "Prazo de execução expirado",
+  check_requested: "Verificação solicitada",
+  check_completed: "Verificação concluída",
+  hardware_mismatch: "Hardware divergente",
+  hardware_resolved: "Divergência resolvida",
+  hardware_standard_updated: "Padrão de hardware atualizado",
 };
 const time = (value?: number | null) =>
   value
-    ? new Date(value * 1000).toLocaleTimeString([], {
+    ? new Date(value * 1000).toLocaleTimeString("pt-BR", {
+        timeZone: "America/Sao_Paulo",
         hour: "2-digit",
         minute: "2-digit",
       })
     : "—";
+const formatoNumero = new Intl.NumberFormat("pt-BR", {
+  maximumFractionDigits: 2,
+});
+const numero = (valor?: number | null) =>
+  valor == null ? "—" : formatoNumero.format(valor);
 const date = (value: number) =>
-  new Date(value * 1000).toLocaleString([], {
+  new Date(value * 1000).toLocaleString("pt-BR", {
+    timeZone: "America/Sao_Paulo",
     month: "short",
     day: "2-digit",
     hour: "2-digit",
@@ -155,13 +188,18 @@ function App() {
   } | null>(null);
   const [detail, setDetail] = useState<PC | null>(null);
   const [editUser, setEditUser] = useState<User | null>(null);
+  const [removeUser, setRemoveUser] = useState<User | null>(null);
   const [newLab, setNewLab] = useState(false);
   const [passwordDialog, setPasswordDialog] = useState(false);
   const [page, setPage] = useState(0);
   const [hardwareFilter, setHardwareFilter] = useState("all");
   const [standardLab, setStandardLab] = useState<Lab | null>(null);
+  const [inventoryTab, setInventoryTab] = useState<"hardware" | "computers">(
+    "hardware",
+  );
   const user = session?.user;
   const admin = user?.role === "admin";
+  const gestor = admin || user?.role === "support";
   const activeUser = React.useRef(user?.id);
   activeUser.current = user?.id;
 
@@ -171,6 +209,7 @@ function App() {
     setEvents([]);
     setDetail(null);
     setEditUser(null);
+    setRemoveUser(null);
     setConfirm(null);
     setPasswordDialog(false);
     setNewLab(false);
@@ -201,7 +240,7 @@ function App() {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const result = await response.json().catch(() => {
-      throw new Error("Server unavailable. Try again.");
+      throw new Error("Servidor indisponível. Tente novamente.");
     });
     if (!response.ok) {
       if (response.status === 401 && activeUser.current === user?.id) {
@@ -211,7 +250,8 @@ function App() {
       throw new Error(
         typeof result.detail === "string"
           ? result.detail
-          : result.detail?.[0]?.msg || "Request failed.",
+          : result.detail?.[0]?.msg ||
+              "Não foi possível concluir a solicitação.",
       );
     }
     return result;
@@ -268,6 +308,7 @@ function App() {
       if (e.key === "Escape") {
         setDetail(null);
         setEditUser(null);
+        setRemoveUser(null);
         setNewLab(false);
         setConfirm(null);
         setPasswordDialog(false);
@@ -310,7 +351,7 @@ function App() {
       });
       setSession(await api<Session>("/api/session"));
       setPasswordDialog(false);
-      setNotice("Password changed.");
+      setNotice("Senha alterada.");
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -328,7 +369,7 @@ function App() {
         { "Idempotency-Key": crypto.randomUUID() },
       );
       setNotice(
-        `${result.job_ids.length} command${result.job_ids.length > 1 ? "s" : ""} queued.`,
+        `${result.job_ids.length} comando${result.job_ids.length > 1 ? "s enviados" : " enviado"} à fila.`,
       );
       setConfirm(null);
       setSelection([]);
@@ -353,22 +394,20 @@ function App() {
         email: String(form.get("email")),
         role: String(form.get("role")),
         enabled: form.get("enabled") === "on",
-        grants: {
-          floors: form.getAll("floor").map(Number),
-          labs: String(form.get("labs") || "")
-            .split(",")
-            .map((v) => v.trim())
-            .filter(Boolean),
-          computers: String(form.get("computers") || "")
-            .split(",")
-            .map((v) => v.trim())
-            .filter(Boolean),
-        },
+        grants:
+          editUser.role === "viewer"
+            ? editUser.grants
+            : {
+                floors:
+                  form.get("role") === "monitor"
+                    ? [Number(form.get("floor"))]
+                    : [],
+              },
       });
       setSession(await api<Session>("/api/session"));
       setEditUser(null);
       setUsers(await api<User[]>("/api/users"));
-      setNotice("User saved.");
+      setNotice("Usuário salvo.");
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -384,12 +423,15 @@ function App() {
         floor: Number(f.get("floor")),
         number: Number(f.get("number")),
         label: f.get("label"),
-        students: Number(f.get("students")),
+        students:
+          f.get("undefined_students") === "on"
+            ? null
+            : Number(f.get("students")),
         include_professor: f.get("professor") === "on",
       });
       await load();
       setNewLab(false);
-      setNotice("Laboratory added.");
+      setNotice("Laboratório adicionado.");
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -407,7 +449,7 @@ function App() {
         mac: f.get("mac"),
       });
       await load();
-      setNotice("Computer updated.");
+      setNotice("Computador atualizado.");
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -428,7 +470,7 @@ function App() {
         .toLowerCase()
         .includes(search.toLowerCase()),
   );
-  const floors = admin
+  const floors = gestor
       ? session?.floors || []
       : [
           ...new Set([
@@ -488,7 +530,7 @@ function App() {
       <div className="loading">
         <img className="brand" src="/brand/fiap.svg" alt="FIAP" />
         <RefreshCw className="spin" size={22} />
-        <p role={error ? "alert" : "status"}>{error || "Loading…"}</p>
+        <p role={error ? "alert" : "status"}>{error || "Carregando…"}</p>
       </div>
     );
   if (!user)
@@ -499,7 +541,7 @@ function App() {
           <span className="product-name">SWITCH</span>
         </header>
         <main className="login-card">
-          <h1>Login</h1>
+          <h1>Entrar</h1>
           {error && (
             <div className="error" role="alert">
               {error}
@@ -508,18 +550,18 @@ function App() {
           {session.auth_mode === "local" ? (
             <form className="login-form" onSubmit={signIn}>
               <label>
-                Email
+                E-mail
                 <input
                   name="username"
                   type="email"
                   autoComplete="username"
                   required
                   maxLength={254}
-                  placeholder="name@fiap.com.br"
+                  placeholder="nome@fiap.com.br"
                 />
               </label>
               <label>
-                Password
+                Senha
                 <input
                   name="password"
                   type="password"
@@ -529,13 +571,13 @@ function App() {
                 />
               </label>
               <button className="primary wide" disabled={busy}>
-                {busy ? "Signing in…" : "Sign in"}
+                {busy ? "Entrando…" : "Entrar"}
                 <ArrowUpRight size={16} />
               </button>
             </form>
           ) : (
             <a className="primary wide" href="/auth/login">
-              Sign in with Microsoft <ArrowUpRight size={16} />
+              Entrar com a Microsoft <ArrowUpRight size={16} />
             </a>
           )}
         </main>
@@ -547,13 +589,17 @@ function App() {
         <button
           className="menu-button"
           onClick={() => setMenu(!menu)}
-          aria-label={menu ? "Close navigation" : "Open navigation"}
+          aria-label={menu ? "Fechar navegação" : "Abrir navegação"}
           aria-expanded={menu}
         >
           <Menu size={18} />
           <span>MENU</span>
         </button>
-        <a className="brand-link" href="/" aria-label="FIAP Switch home">
+        <a
+          className="brand-link"
+          href="/"
+          aria-label="Página inicial do FIAP Switch"
+        >
           <img className="brand" src="/brand/fiap.svg" alt="FIAP" />
         </a>
         <span className="product-name">SWITCH</span>
@@ -561,19 +607,13 @@ function App() {
           <span className="avatar">{user.name[0]}</span>
           <div className="identity">
             <strong>{user.name}</strong>
-            <span>
-              {admin
-                ? "Administrator"
-                : user.role === "viewer"
-                  ? "Observer"
-                  : "Monitor"}
-            </span>
+            <span>{labels[user.role] || user.role}</span>
           </div>
           {session.auth_mode === "local" && (
             <button
               className="icon-button"
-              aria-label="Change password"
-              title="Change password"
+              aria-label="Alterar senha"
+              title="Alterar senha"
               onClick={() => {
                 setError("");
                 setPasswordDialog(true);
@@ -584,8 +624,8 @@ function App() {
           )}
           <button
             className="icon-button"
-            aria-label="Sign out"
-            title="Sign out"
+            aria-label="Sair"
+            title="Sair"
             onClick={async () => {
               try {
                 await api("/auth/logout", "POST");
@@ -606,18 +646,18 @@ function App() {
         <button
           className="menu-backdrop"
           onClick={() => setMenu(false)}
-          aria-label="Close navigation"
+          aria-label="Fechar navegação"
         />
       )}
       <aside className={`sidebar ${menu ? "open" : ""}`}>
-        <div className="nav-section">WORKSPACE</div>
+        <div className="nav-section">PAINEL</div>
         <nav>
           {(
             [
-              ["overview", LayoutDashboard, "Overview"],
-              ["computers", Monitor, "Computers"],
-              ["activity", Activity, "Activity"],
-              ["checks", Clock3, "Checks & history"],
+              ["overview", LayoutDashboard, "Visão geral"],
+              ["computers", Monitor, "Computadores"],
+              ["activity", Activity, "Atividade"],
+              ["checks", Clock3, "Verificações e histórico"],
             ] as const
           ).map(([key, Icon, title]) => (
             <button
@@ -634,7 +674,7 @@ function App() {
           ))}
         </nav>
         <div className="nav-section floor-label">
-          FLOORS <span>{floors.length}</span>
+          ANDARES <span>{floors.length}</span>
         </div>
         <div className="floor-nav">
           <button
@@ -645,7 +685,7 @@ function App() {
             }}
           >
             <Building2 size={15} />
-            {admin ? "All floors" : "My floors"}
+            {gestor ? "Todos os andares" : "Meus andares"}
           </button>
           {floors.map((f) => (
             <button
@@ -656,29 +696,31 @@ function App() {
               }}
             >
               <span className="floor-num">{String(f).padStart(2, "0")}</span>
-              Floor {f}
+              Andar {f}
               <span
                 className={`floor-dot ${all.some((c) => c.floor === f && c.status === "unreachable") ? "amber" : ""}`}
               />
             </button>
           ))}
         </div>
-        {admin && (
+        {gestor && (
           <>
-            <div className="nav-section">ADMINISTRATION</div>
-            <button
-              className={`nav-item ${view === "access" ? "active" : ""}`}
-              onClick={() => navigate("access")}
-            >
-              <Users size={18} />
-              User access
-            </button>
+            <div className="nav-section">ADMINISTRAÇÃO</div>
+            {admin && (
+              <button
+                className={`nav-item ${view === "access" ? "active" : ""}`}
+                onClick={() => navigate("access")}
+              >
+                <Users size={18} />
+                Acessos
+              </button>
+            )}
             <button
               className={`nav-item ${view === "inventory" ? "active" : ""}`}
               onClick={() => navigate("inventory")}
             >
               <Settings2 size={18} />
-              Inventory
+              Inventário
             </button>
           </>
         )}
@@ -688,23 +730,23 @@ function App() {
           <h1>
             <Monitor size={19} />
             {view === "overview"
-              ? "Laboratories"
+              ? "Laboratórios"
               : view === "computers"
                 ? floor === null
-                  ? "Computers"
-                  : `Floor ${floor}`
+                  ? "Computadores"
+                  : `Andar ${floor}`
                 : view === "activity"
-                  ? "Activity"
+                  ? "Atividade"
                   : view === "access"
-                    ? "Users"
+                    ? "Usuários"
                     : view === "checks"
-                      ? "Checks & history"
-                      : "Inventory"}
+                      ? "Verificações e histórico"
+                      : "Inventário"}
           </h1>
           <div className="heading-actions">
             <span className="last-update">
               <span className="live-dot" />
-              Updated {time(data?.updated_at)}
+              Atualizado às {time(data?.updated_at)}
             </span>
             {view === "access" ? (
               <button
@@ -722,7 +764,7 @@ function App() {
                 }}
               >
                 <Plus size={16} />
-                Add user
+                Adicionar usuário
               </button>
             ) : view === "inventory" ? (
               <button
@@ -733,7 +775,7 @@ function App() {
                 }}
               >
                 <Plus size={16} />
-                Add laboratory
+                Adicionar laboratório
               </button>
             ) : (
               <button
@@ -742,7 +784,7 @@ function App() {
                 onClick={() => load().catch((e) => setError(e.message))}
               >
                 <RefreshCw size={15} />
-                Refresh
+                Atualizar
               </button>
             )}
           </div>
@@ -752,7 +794,7 @@ function App() {
             {error}
             <button
               className="icon-button"
-              aria-label="Dismiss error"
+              aria-label="Fechar aviso"
               onClick={() => setError("")}
             >
               <X size={16} />
@@ -764,8 +806,8 @@ function App() {
             <div className="hardware-alert" role="alert">
               <Cpu size={18} />
               <span>
-                {mismatches.length} hardware mismatch
-                {mismatches.length === 1 ? "" : "es"} detected
+                {mismatches.length} divergência
+                {mismatches.length === 1 ? "" : "s"} de hardware
               </span>
               <button
                 className="text-button"
@@ -778,7 +820,7 @@ function App() {
                   setHardwareFilter("mismatch");
                 }}
               >
-                Review hardware
+                Ver hardware
               </button>
             </div>
           )}
@@ -786,24 +828,24 @@ function App() {
           <>
             <div className="stats">
               <Stat
-                label="COMPUTERS"
+                label="COMPUTADORES"
                 value={scoped.length}
                 icon={<Monitor size={19} />}
               />
               <Stat
-                label="ONLINE"
+                label="LIGADOS"
                 value={counts("online")}
                 icon={<Power size={19} />}
                 tone="green"
               />
               <Stat
-                label="NO RESPONSE"
+                label="SEM RESPOSTA"
                 value={counts("unreachable")}
                 icon={<Activity size={19} />}
                 tone="amber"
               />
               <Stat
-                label="UNKNOWN"
+                label="NÃO VERIFICADOS"
                 value={counts("unknown")}
                 icon={<Clock3 size={19} />}
                 tone="gray"
@@ -812,8 +854,8 @@ function App() {
             {view === "overview" && floors.length > 0 && (
               <section className="panel floor-overview">
                 <div className="panel-title">
-                  <h2>Floor status</h2>
-                  <span>{floors.length} floors</span>
+                  <h2>Situação por andar</h2>
+                  <span>{quantidade(floors.length, "andar", "andares")}</span>
                 </div>
                 <div className="floor-cards">
                   {floors
@@ -825,6 +867,9 @@ function App() {
                         ).length,
                         attention = pcs.filter((c) =>
                           ["unreachable", "unknown"].includes(c.status),
+                        ).length,
+                        hardwareIssues = pcs.filter(
+                          (pc) => pc.hardware_state === "mismatch",
                         ).length;
                       return (
                         <button
@@ -836,7 +881,7 @@ function App() {
                         >
                           <div className="floor-card-head">
                             <span>
-                              FLOOR{" "}
+                              ANDAR{" "}
                               <strong>{String(f).padStart(2, "0")}</strong>
                             </span>
                             <ArrowUpRight size={17} />
@@ -845,30 +890,24 @@ function App() {
                             className="floor-progress"
                             value={online}
                             max={Math.max(1, pcs.length)}
-                            aria-label={`Floor ${f}: ${online} of ${pcs.length} online`}
+                            aria-label={`Andar ${f}: ${online} de ${pcs.length} ligados`}
                           />
                           <div className="floor-card-foot">
                             <span>
-                              <b>{online}</b> / {pcs.length} online
+                              <b>{online}</b> / {pcs.length} ligados
                             </span>
                             <span className={attention ? "attention-text" : ""}>
                               {attention
-                                ? `${attention} to check`
+                                ? `${attention} para verificar`
                                 : pcs.length
-                                  ? "All verified"
-                                  : "No computers"}
+                                  ? "Tudo verificado"
+                                  : "Nenhum computador"}
                             </span>
                           </div>
-                          {pcs.some(
-                            (pc) => pc.hardware_state === "mismatch",
-                          ) && (
+                          {hardwareIssues > 0 && (
                             <small className="attention-text">
-                              {
-                                pcs.filter(
-                                  (pc) => pc.hardware_state === "mismatch",
-                                ).length
-                              }{" "}
-                              hardware mismatches
+                              {hardwareIssues} divergência
+                              {hardwareIssues === 1 ? "" : "s"} de hardware
                             </small>
                           )}
                         </button>
@@ -881,21 +920,21 @@ function App() {
               <section className="panel computer-panel">
                 <div className="panel-title">
                   <h2>
-                    Laboratory computers{" "}
+                    Computadores do laboratório{" "}
                     <span className="count-badge">{filtered.length}</span>
                   </h2>
                   <div className="status-legend">
                     <span>
                       <i className="green" />
-                      Online
+                      Ligado
                     </span>
                     <span>
                       <i className="gray" />
-                      Unknown
+                      Não verificado
                     </span>
                     <span>
                       <i className="amber" />
-                      Attention
+                      Atenção
                     </span>
                   </div>
                 </div>
@@ -903,7 +942,7 @@ function App() {
                   <label className="select-field">
                     <Building2 size={15} />
                     <select
-                      aria-label="Floor"
+                      aria-label="Andar"
                       value={floor ?? ""}
                       onChange={(e) =>
                         chooseFloor(
@@ -911,10 +950,10 @@ function App() {
                         )
                       }
                     >
-                      <option value="">All assigned floors</option>
+                      <option value="">Todos os andares permitidos</option>
                       {floors.map((f) => (
                         <option key={f} value={f}>
-                          Floor {f}
+                          Andar {f}
                         </option>
                       ))}
                     </select>
@@ -922,8 +961,8 @@ function App() {
                   <label className="search-field">
                     <Search size={16} />
                     <input
-                      aria-label="Search computers"
-                      placeholder="Search hostname, IP or lab…"
+                      aria-label="Buscar computadores"
+                      placeholder="Buscar nome, IP ou laboratório…"
                       value={search}
                       onChange={(e) => {
                         setSearch(e.target.value);
@@ -934,14 +973,14 @@ function App() {
                   <label className="select-field">
                     <Building2 size={15} />
                     <select
-                      aria-label="Laboratory"
+                      aria-label="Laboratório"
                       value={lab}
                       onChange={(e) => {
                         setLab(e.target.value);
                         setSelection([]);
                       }}
                     >
-                      <option value="all">All laboratories</option>
+                      <option value="all">Todos os laboratórios</option>
                       {labs.map((l) => (
                         <option key={l.id} value={l.id}>
                           {l.label}
@@ -952,14 +991,14 @@ function App() {
                   <label className="select-field">
                     <ListFilter size={15} />
                     <select
-                      aria-label="Computer status"
+                      aria-label="Situação do computador"
                       value={status}
                       onChange={(e) => {
                         setStatus(e.target.value);
                         setSelection([]);
                       }}
                     >
-                      <option value="all">All statuses</option>
+                      <option value="all">Todas as situações</option>
                       {["online", "unreachable", "unknown"].map((s) => (
                         <option key={s} value={s}>
                           {labels[s]}
@@ -970,15 +1009,15 @@ function App() {
                   <label className="select-field">
                     <Cpu size={15} />
                     <select
-                      aria-label="Hardware status"
+                      aria-label="Situação do hardware"
                       value={hardwareFilter}
                       onChange={(e) => setHardwareFilter(e.target.value)}
                     >
-                      <option value="all">All hardware</option>
-                      <option value="match">Matches standard</option>
-                      <option value="mismatch">Hardware mismatch</option>
-                      <option value="unknown">Not verified</option>
-                      <option value="unconfigured">No standard</option>
+                      <option value="all">Todos os equipamentos</option>
+                      <option value="match">Dentro do padrão</option>
+                      <option value="mismatch">Hardware divergente</option>
+                      <option value="unknown">Não verificado</option>
+                      <option value="unconfigured">Sem padrão</option>
                     </select>
                   </label>
                 </div>
@@ -986,7 +1025,7 @@ function App() {
                   <div className="selection-bar">
                     <span>
                       <Check size={16} />
-                      {selection.length} selected
+                      {selection.length} selecionado(s)
                     </span>
                     <div>
                       {["wake", "restart", "shutdown"].map((a) => (
@@ -1000,7 +1039,7 @@ function App() {
                         </button>
                       ))}
                       <button
-                        aria-label="Clear selection"
+                        aria-label="Limpar seleção"
                         onClick={() => setSelection([])}
                       >
                         <X size={15} />
@@ -1015,7 +1054,7 @@ function App() {
                         <th className="check-cell">
                           <input
                             type="checkbox"
-                            aria-label="Select all visible computers"
+                            aria-label="Selecionar todos os computadores visíveis"
                             checked={
                               controlled.length > 0 &&
                               controlled.every((c) => selection.includes(c.id))
@@ -1030,14 +1069,14 @@ function App() {
                             }
                           />
                         </th>
-                        <th>COMPUTER</th>
-                        <th>LABORATORY</th>
-                        <th>IP ADDRESS</th>
-                        <th>STATUS</th>
+                        <th>COMPUTADOR</th>
+                        <th>LABORATÓRIO</th>
+                        <th>ENDEREÇO IP</th>
+                        <th>SITUAÇÃO</th>
                         <th>HARDWARE</th>
                         <th>CPU</th>
-                        <th>LAST CHECK</th>
-                        <th className="end">ACTIONS</th>
+                        <th>ÚLTIMA VERIFICAÇÃO</th>
+                        <th className="end">AÇÕES</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1051,7 +1090,7 @@ function App() {
                           <td className="check-cell">
                             <input
                               type="checkbox"
-                              aria-label={`Select ${c.id}`}
+                              aria-label={`Selecionar ${c.id}`}
                               checked={selection.includes(c.id)}
                               disabled={!c.can_control || pending.has(c.id)}
                               onChange={(e) =>
@@ -1076,8 +1115,8 @@ function App() {
                               <span>
                                 <strong>
                                   {c.number === 100
-                                    ? "Professor workstation"
-                                    : `Computer ${String(c.number).padStart(2, "0")}`}
+                                    ? "Computador do professor"
+                                    : `Computador ${String(c.number).padStart(2, "0")}`}
                                 </strong>
                                 <small>{c.hostname || c.id}</small>
                               </span>
@@ -1085,7 +1124,7 @@ function App() {
                           </td>
                           <td>
                             <span className="lab-text">{c.lab_label}</span>
-                            <small>Floor {c.floor}</small>
+                            <small>Andar {c.floor}</small>
                           </td>
                           <td className="mono">{c.ip}</td>
                           <td>
@@ -1094,7 +1133,7 @@ function App() {
                             >
                               <i />
                               {pending.has(c.id)
-                                ? "Command pending"
+                                ? "Comando pendente"
                                 : labels[c.status]}
                             </span>
                           </td>
@@ -1103,16 +1142,16 @@ function App() {
                               className={`status ${c.hardware_state === "mismatch" ? "unreachable" : c.hardware_state === "match" ? "online" : "unknown"}`}
                             >
                               {c.hardware_state === "match"
-                                ? "Matches"
+                                ? "Conforme"
                                 : c.hardware_state === "mismatch"
-                                  ? "Mismatch"
+                                  ? "Divergente"
                                   : c.hardware_state === "unconfigured"
-                                    ? "No standard"
-                                    : "Not verified"}
+                                    ? "Sem padrão"
+                                    : "Não verificado"}
                             </span>
                             {c.hardware_mismatch_since && (
                               <small>
-                                Since {date(c.hardware_mismatch_since)}
+                                Desde {date(c.hardware_mismatch_since)}
                               </small>
                             )}
                           </td>
@@ -1120,7 +1159,7 @@ function App() {
                             {c.status === "online" ? (
                               <div className="health-cell">
                                 <Cpu size={13} />
-                                <span>{c.metrics.cpu ?? "—"}%</span>
+                                <span>{numero(c.metrics.cpu)}%</span>
                                 <span className="mini-meter">
                                   <i
                                     className={`meter-fill w${Math.round((c.metrics.cpu || 0) / 10) * 10}`}
@@ -1138,7 +1177,7 @@ function App() {
                                 <button
                                   disabled={pending.has(c.id)}
                                   className="icon-button power-action"
-                                  aria-label={`Power controls for ${c.id}`}
+                                  aria-label={`Controles de energia de ${c.id}`}
                                   onClick={() => setDetail(c)}
                                 >
                                   <Power size={16} />
@@ -1146,7 +1185,7 @@ function App() {
                               )}
                               <button
                                 className="icon-button"
-                                aria-label={`Details for ${c.id}`}
+                                aria-label={`Detalhes de ${c.id}`}
                                 onClick={() => setDetail(c)}
                               >
                                 <MoreHorizontal size={18} />
@@ -1160,20 +1199,21 @@ function App() {
                   {filtered.length === 0 && (
                     <div className="empty">
                       <Monitor size={26} />
-                      <h3>No computers found</h3>
+                      <h3>Nenhum computador encontrado</h3>
                       <p>
                         {all.length
-                          ? "Adjust your filters."
-                          : admin
-                            ? "Add a laboratory to start."
-                            : "Ask support to assign your floor."}
+                          ? "Ajuste os filtros."
+                          : gestor
+                            ? "Adicione um laboratório."
+                            : "Peça ao administrador para definir seu andar."}
                       </p>
                     </div>
                   )}
                 </div>
                 <div className="table-footer">
                   <span>
-                    {displayed.length} of {filtered.length} computers
+                    {displayed.length} de{" "}
+                    {quantidade(filtered.length, "computador", "computadores")}
                   </span>
                   {view === "computers" && filtered.length > 50 && (
                     <div className="pagination">
@@ -1185,10 +1225,10 @@ function App() {
                           setSelection([]);
                         }}
                       >
-                        Previous
+                        Anterior
                       </button>
                       <span>
-                        Page {page + 1} of {Math.ceil(filtered.length / 50)}
+                        Página {page + 1} de {Math.ceil(filtered.length / 50)}
                       </span>
                       <button
                         className="secondary small"
@@ -1198,7 +1238,7 @@ function App() {
                           setSelection([]);
                         }}
                       >
-                        Next
+                        Próxima
                       </button>
                     </div>
                   )}
@@ -1208,12 +1248,12 @@ function App() {
             {view === "overview" && (
               <section className="panel">
                 <div className="panel-title">
-                  <h2>Recent commands</h2>
+                  <h2>Comandos recentes</h2>
                   <button
                     className="text-button"
                     onClick={() => setView("activity")}
                   >
-                    Activity log <ArrowUpRight size={14} />
+                    Ver atividade <ArrowUpRight size={14} />
                   </button>
                 </div>
                 <Jobs jobs={data?.jobs.slice(0, 5) || []} />
@@ -1225,40 +1265,45 @@ function App() {
           <>
             <section className="panel">
               <div className="panel-title">
-                <h2>Commands</h2>
-                <span>Last 100</span>
+                <h2>Comandos</h2>
+                <span>Últimos 100</span>
               </div>
               <Jobs jobs={data?.jobs || []} />
             </section>
             <section className="panel">
               <div className="panel-title">
-                <h2>Audit trail</h2>
+                <h2>Auditoria</h2>
               </div>
               <div className="table-wrap">
                 <table>
                   <thead>
                     <tr>
-                      <th>TIME</th>
-                      <th>ACTOR</th>
-                      <th>ACTION</th>
-                      <th>TARGET</th>
+                      <th>HORÁRIO</th>
+                      <th>RESPONSÁVEL</th>
+                      <th>AÇÃO</th>
+                      <th>DESTINO</th>
                     </tr>
                   </thead>
                   <tbody>
                     {events.map((ev) => (
                       <tr key={ev.id}>
                         <td>{date(ev.created)}</td>
-                        <td className="mono">{ev.actor}</td>
+                        <td>
+                          {ev.actor_name ||
+                            (ev.actor === "collector" || ev.actor === "system"
+                              ? "Controlador"
+                              : ev.actor)}
+                        </td>
                         <td>
                           {labels[ev.action] || ev.action.replaceAll("_", " ")}
                         </td>
-                        <td>{ev.target}</td>
+                        <td>{labels[ev.target] || ev.target}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
                 {!events.length && (
-                  <div className="empty">No activity recorded.</div>
+                  <div className="empty">Nenhuma atividade registrada.</div>
                 )}
               </div>
             </section>
@@ -1267,18 +1312,17 @@ function App() {
         {view === "access" && (
           <section className="panel">
             <div className="panel-title">
-              <h2>Accounts</h2>
-              <span>{users.length} accounts</span>
+              <h2>Contas</h2>
+              <span>{users.length} contas</span>
             </div>
             <div className="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>USER</th>
-                    <th>ROLE</th>
-                    <th>SCOPE</th>
-                    <th>ACCESS</th>
-                    <th />
+                    <th>USUÁRIO</th>
+                    <th>PERFIL</th>
+                    <th>PERMISSÕES</th>
+                    <th>ACESSO</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1287,43 +1331,54 @@ function App() {
                       <td>
                         <strong>{u.name}</strong>
                         <small>{u.email}</small>
+                        <div className="account-actions">
+                          <button
+                            className="secondary small"
+                            onClick={() => {
+                              setError("");
+                              setEditUser(u);
+                            }}
+                          >
+                            Editar
+                          </button>
+                          <button
+                            className="icon-button"
+                            aria-label={`Excluir conta de ${u.name}`}
+                            disabled={u.id === user.id}
+                            onClick={() => {
+                              setError("");
+                              setRemoveUser(u);
+                            }}
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
                       </td>
-                      <td className="capitalize">{u.role}</td>
+                      <td>{labels[u.role] || u.role}</td>
                       <td>
-                        {u.role === "admin"
-                          ? "All computers"
+                        {u.role === "admin" || u.role === "support"
+                          ? "Todos os computadores"
                           : [
                               u.grants.floors?.length
-                                ? `Floors ${u.grants.floors.join(", ")}`
+                                ? `${u.grants.floors.length === 1 ? "Andar" : "Andares"} ${u.grants.floors.join(", ")}`
                                 : "",
                               u.grants.labs?.length
-                                ? `Labs ${u.grants.labs.join(", ")}`
+                                ? `Salas ${u.grants.labs.join(", ")}`
                                 : "",
                               u.grants.computers?.length
-                                ? `${u.grants.computers.length} computers`
+                                ? `${u.grants.computers.length} computadores`
                                 : "",
                             ]
                               .filter(Boolean)
-                              .join(" · ") || "No computers assigned"}
+                              .join(" · ") || "Nenhum computador permitido"}
                       </td>
                       <td>
                         <span
                           className={`status ${u.enabled ? "online" : "offline"}`}
                         >
                           <i />
-                          {u.enabled ? "Enabled" : "Disabled"}
+                          {u.enabled ? "Ativo" : "Inativo"}
                         </span>
-                      </td>
-                      <td className="end">
-                        <button
-                          className="secondary small"
-                          onClick={() => {
-                            setError("");
-                            setEditUser(u);
-                          }}
-                        >
-                          Edit
-                        </button>
                       </td>
                     </tr>
                   ))}
@@ -1335,20 +1390,20 @@ function App() {
         {view === "inventory" && (
           <section className="panel">
             <div className="panel-title">
-              <h2>Registered laboratories</h2>
-              <span>{data?.labs.filter(l => floor === null || l.floor === floor).length} laboratories</span>
+              <h2>Laboratórios cadastrados</h2>
+              <span>{quantidade(labs.length, "laboratório")}</span>
             </div>
             <div className="filters">
               <label className="select-field">
                 <Building2 size={15} />
                 <select
-                  aria-label="Inventory floor"
+                  aria-label="Andar do inventário"
                   value={floor ?? defaultFloor ?? ""}
                   onChange={(e) => chooseFloor(Number(e.target.value))}
                 >
                   {floors.map((f) => (
                     <option key={f} value={f}>
-                      Floor {f}
+                      Andar {f}
                     </option>
                   ))}
                 </select>
@@ -1358,12 +1413,12 @@ function App() {
               <table>
                 <thead>
                   <tr>
-                    <th>LABORATORY</th>
-                    <th>FLOOR</th>
-                    <th>SUBNET</th>
-                    <th>COMPUTERS</th>
+                    <th>LABORATÓRIO</th>
+                    <th>ANDAR</th>
+                    <th>SUB-REDE</th>
+                    <th>COMPUTADORES</th>
                     <th>WAKE-ON-LAN</th>
-                    <th>HARDWARE STANDARD</th>
+                    <th>PADRÃO DE HARDWARE</th>
                     <th />
                   </tr>
                 </thead>
@@ -1375,26 +1430,46 @@ function App() {
                         <td>
                           <strong>{l.label}</strong>
                           <small>{l.id}</small>
-                        </td>
-                        <td>Floor {l.floor}</td>
-                        <td className="mono">{l.subnet}</td>
-                        <td>{all.filter((c) => c.lab_id === l.id).length}</td>
-                        <td>
-                          {all.filter((c) => c.lab_id === l.id && c.mac).length}{" "}
-                          MAC addresses
-                        </td>
-                        <td>
                           <button
-                            className="secondary small"
+                            className="text-button"
                             onClick={() => {
                               setError("");
+                              setInventoryTab("hardware");
                               setStandardLab(l);
                             }}
                           >
-                            {l.hardware_standard?.enabled
-                              ? "Edit standard"
-                              : "Set standard"}
+                            Configurar sala
                           </button>
+                        </td>
+                        <td>Andar {l.floor}</td>
+                        <td className="mono">{l.subnet}</td>
+                        <td>
+                          {l.student_count === null ? (
+                            <>
+                              Indefinido
+                              <small>
+                                {quantidade(
+                                  all.filter((c) => c.lab_id === l.id).length,
+                                  "cadastrado",
+                                )}
+                              </small>
+                            </>
+                          ) : (
+                            all.filter((c) => c.lab_id === l.id).length
+                          )}
+                        </td>
+                        <td>
+                          {quantidade(
+                            all.filter((c) => c.lab_id === l.id && c.mac)
+                              .length,
+                            "endereço MAC",
+                            "endereços MAC",
+                          )}
+                        </td>
+                        <td>
+                          {l.hardware_standard?.enabled
+                            ? "Ativo"
+                            : "Sem padrão"}
                         </td>
                         <td className="end">
                           <button
@@ -1403,15 +1478,15 @@ function App() {
                               navigate("computers", l.floor, l.id);
                             }}
                           >
-                            Manage <ArrowUpRight size={14} />
+                            Gerenciar <ArrowUpRight size={14} />
                           </button>
                         </td>
                       </tr>
                     ))}
                 </tbody>
               </table>
-              {!data?.labs.some(l => floor === null || l.floor === floor) && (
-                <div className="empty">No laboratories on this floor.</div>
+              {!data?.labs.some((l) => floor === null || l.floor === floor) && (
+                <div className="empty">Nenhum laboratório neste andar.</div>
               )}
             </div>
           </section>
@@ -1427,15 +1502,15 @@ function App() {
         )}
         <footer className="main-footer">
           <span>FIAP SWITCH</span>
-          {admin && (
+          {gestor && (
             <span className="controller-status">
               <Server size={13} />
-              Controller{" "}
+              Controlador{" "}
               {data?.collectors.some(
                 (c) => c.last_seen && Date.now() / 1000 - c.last_seen < 120,
               )
-                ? "connected"
-                : "disconnected"}
+                ? "conectado"
+                : "desconectado"}
             </span>
           )}
         </footer>
@@ -1448,34 +1523,87 @@ function App() {
       )}
       {standardLab && (
         <Modal
-          title={`Hardware standard · ${standardLab.label}`}
+          title={`Inventário · ${standardLab.label}`}
           close={() => setStandardLab(null)}
           error={error}
           wide
         >
-          <HardwareStandardForm
-            standard={standardLab.hardware_standard}
-            sample={
-              all.find(
-                (pc) => pc.lab_id === standardLab.id && pc.hardware_checked_at,
-              )?.hardware
-            }
-            close={() => setStandardLab(null)}
-            save={async (value) => {
-              try {
-                await api(
-                  `/api/labs/${standardLab.id}/hardware-standard`,
-                  "PUT",
-                  value,
-                );
-                await load();
-                setStandardLab(null);
-                setNotice("Hardware standard saved.");
-              } catch (e) {
-                setError((e as Error).message);
+          <div className="history-tabs">
+            <button
+              className={inventoryTab === "hardware" ? "active" : ""}
+              onClick={() => setInventoryTab("hardware")}
+            >
+              Padrão de hardware
+            </button>
+            <button
+              className={inventoryTab === "computers" ? "active" : ""}
+              onClick={() => setInventoryTab("computers")}
+            >
+              Computadores
+            </button>
+          </div>
+          {inventoryTab === "computers" ? (
+            <LabQuantityForm
+              key={standardLab.id}
+              value={standardLab.student_count}
+              registered={
+                all.filter(
+                  (pc) => pc.lab_id === standardLab.id && pc.number < 100,
+                ).length
               }
-            }}
-          />
+              save={async (students) => {
+                try {
+                  await api(`/api/labs/${standardLab.id}/quantity`, "PUT", {
+                    students,
+                  });
+                  const next = await load();
+                  setStandardLab(
+                    next.labs.find((l) => l.id === standardLab.id) || null,
+                  );
+                  setNotice("Quantidade atualizada.");
+                } catch (e) {
+                  setError((e as Error).message);
+                }
+              }}
+            />
+          ) : (
+            <HardwareStandardForm
+              standard={standardLab.hardware_standard}
+              references={all
+                .filter(
+                  (pc) =>
+                    pc.lab_id === standardLab.id &&
+                    pc.status === "online" &&
+                    !pc.stale &&
+                    pc.hardware_checked_at &&
+                    Date.now() / 1000 - pc.hardware_checked_at < 120 &&
+                    pc.hardware.logical_cpus &&
+                    pc.hardware.memory_gib &&
+                    (pc.hardware_state === "match" ||
+                      !standardLab.hardware_standard?.enabled),
+                )
+                .map((pc) => ({
+                  id: pc.id,
+                  name: `${pc.hostname || pc.id} · ${pc.hardware_state === "match" ? "Conforme" : "Sem padrão"}`,
+                  hardware: pc.hardware,
+                }))}
+              close={() => setStandardLab(null)}
+              save={async (value) => {
+                try {
+                  await api(
+                    `/api/labs/${standardLab.id}/hardware-standard`,
+                    "PUT",
+                    value,
+                  );
+                  await load();
+                  setStandardLab(null);
+                  setNotice("Padrão de hardware salvo.");
+                } catch (e) {
+                  setError((e as Error).message);
+                }
+              }}
+            />
+          )}
         </Modal>
       )}
       {confirm && (
@@ -1488,12 +1616,13 @@ function App() {
             <Power size={28} />
           </div>
           <p className="confirm-copy">
-            {labels[confirm.action]} {confirm.ids.length} computer
-            {confirm.ids.length > 1 ? "s" : ""}?
+            {labels[confirm.action]} {confirm.ids.length} computador
+            {confirm.ids.length > 1 ? "es" : ""}?
           </p>
           {confirm.action !== "wake" && (
             <p className="muted">
-              Unsaved work will be lost after the 60-second Windows notice.
+              O Windows exibirá um aviso de 60 segundos. Trabalhos não salvos
+              serão perdidos.
             </p>
           )}
           <div className="modal-actions">
@@ -1502,10 +1631,10 @@ function App() {
               disabled={busy}
               onClick={() => setConfirm(null)}
             >
-              Cancel
+              Cancelar
             </button>
             <button className="primary" disabled={busy} onClick={runAction}>
-              {busy ? "Submitting…" : "Confirm"}
+              {busy ? "Enviando…" : "Confirmar"}
             </button>
           </div>
         </Modal>
@@ -1514,8 +1643,8 @@ function App() {
         <Modal
           title={
             detail.number === 100
-              ? "Professor workstation"
-              : `Computer ${detail.number}`
+              ? "Computador do professor"
+              : `Computador ${detail.number}`
           }
           close={() => setDetail(null)}
           error={error}
@@ -1527,60 +1656,60 @@ function App() {
               {labels[detail.status]}
             </span>
             <span>
-              {detail.lab_label} · Floor {detail.floor}
+              {detail.lab_label} · Andar {detail.floor}
             </span>
           </div>
           <dl className="details">
             <div>
-              <dt>IP ADDRESS</dt>
+              <dt>ENDEREÇO IP</dt>
               <dd className="mono">{detail.ip}</dd>
             </div>
             <div>
-              <dt>HOSTNAME</dt>
-              <dd>{detail.hostname || "Not registered"}</dd>
+              <dt>NOME DE REDE</dt>
+              <dd>{detail.hostname || "Não cadastrado"}</dd>
             </div>
             <div>
-              <dt>OPERATING SYSTEM</dt>
+              <dt>SISTEMA OPERACIONAL</dt>
               <dd>{detail.metrics.os || "—"}</dd>
             </div>
             <div>
-              <dt>LAST CHECK</dt>
+              <dt>ÚLTIMA VERIFICAÇÃO</dt>
               <dd>
                 {time(detail.last_seen)}
-                {detail.stale ? " · stale" : ""}
+                {detail.stale ? " · desatualizado" : ""}
               </dd>
             </div>
             <div>
-              <dt>CPU / MEMORY</dt>
+              <dt>CPU / MEMÓRIA</dt>
               <dd>
-                {detail.metrics.cpu ?? "—"}% / {detail.metrics.memory ?? "—"}%
+                {numero(detail.metrics.cpu)}% / {numero(detail.metrics.memory)}%
               </dd>
             </div>
             <div>
-              <dt>DISK FREE / UPTIME</dt>
+              <dt>DISCO LIVRE / TEMPO LIGADO</dt>
               <dd>
-                {detail.metrics.disk_free ?? "—"}% /{" "}
-                {detail.metrics.uptime_hours ?? "—"} h
+                {numero(detail.metrics.disk_free)}% /{" "}
+                {numero(detail.metrics.uptime_hours)} h
               </dd>
             </div>
           </dl>
           <dl className="details">
             <div>
-              <dt>CPU MODEL</dt>
+              <dt>MODELO DE CPU</dt>
               <dd>{detail.hardware?.cpu_model || "—"}</dd>
             </div>
             <div>
-              <dt>LOGICAL CPUS / RAM</dt>
+              <dt>CPUS LÓGICAS / RAM</dt>
               <dd>
-                {detail.hardware?.logical_cpus ?? "—"} /{" "}
-                {detail.hardware?.memory_gib ?? "—"} GiB
+                {numero(detail.hardware?.logical_cpus)} /{" "}
+                {numero(detail.hardware?.memory_gib)} GiB
               </dd>
             </div>
             <div>
-              <dt>STORAGE / DISKS</dt>
+              <dt>ARMAZENAMENTO / DISCOS</dt>
               <dd>
-                {detail.hardware?.storage_gib ?? "—"} GiB /{" "}
-                {detail.hardware?.disk_count ?? "—"}
+                {numero(detail.hardware?.storage_gib)} GiB /{" "}
+                {numero(detail.hardware?.disk_count)}
               </dd>
             </div>
             <div>
@@ -1588,7 +1717,7 @@ function App() {
               <dd>{detail.hardware?.gpu_models?.join(", ") || "—"}</dd>
             </div>
             <div>
-              <dt>HARDWARE VERIFIED</dt>
+              <dt>HARDWARE VERIFICADO</dt>
               <dd>
                 {detail.hardware_checked_at
                   ? date(detail.hardware_checked_at)
@@ -1596,7 +1725,7 @@ function App() {
               </dd>
             </div>
             <div>
-              <dt>MISMATCH DETECTED</dt>
+              <dt>DIVERGÊNCIA DETECTADA</dt>
               <dd>
                 {detail.hardware_mismatch_since
                   ? date(detail.hardware_mismatch_since)
@@ -1612,10 +1741,10 @@ function App() {
             </div>
           )}
           {detail.issue && <div className="issue-note">{detail.issue}</div>}
-          {admin && (
+          {gestor && (
             <form onSubmit={savePC}>
               <label>
-                Hostname
+                Nome de rede
                 <input
                   name="hostname"
                   defaultValue={detail.hostname}
@@ -1623,7 +1752,7 @@ function App() {
                 />
               </label>
               <label>
-                MAC address
+                Endereço MAC
                 <input
                   name="mac"
                   defaultValue={detail.mac}
@@ -1631,7 +1760,7 @@ function App() {
                 />
               </label>
               <button className="secondary small" disabled={busy}>
-                Save computer
+                Salvar computador
               </button>
             </form>
           )}
@@ -1661,9 +1790,50 @@ function App() {
           )}
         </Modal>
       )}
+      {removeUser && (
+        <Modal
+          title="Excluir conta"
+          close={() => setRemoveUser(null)}
+          error={error}
+        >
+          <p>Excluir a conta de {removeUser.name}?</p>
+          <small>
+            O acesso e as sessões serão encerrados. A autoria das ações será
+            preservada.
+          </small>
+          <div className="modal-actions">
+            <button
+              className="secondary"
+              disabled={busy}
+              onClick={() => setRemoveUser(null)}
+            >
+              Cancelar
+            </button>
+            <button
+              className="primary"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await api(`/api/users/${removeUser.id}`, "DELETE");
+                  setUsers(await api<User[]>("/api/users"));
+                  setRemoveUser(null);
+                  setNotice("Conta excluída.");
+                } catch (e) {
+                  setError((e as Error).message);
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              {busy ? "Excluindo…" : "Excluir conta"}
+            </button>
+          </div>
+        </Modal>
+      )}
       {editUser && (
         <Modal
-          title={editUser.id ? "Edit user" : "Add user"}
+          title={editUser.id ? "Editar usuário" : "Adicionar usuário"}
           close={() => setEditUser(null)}
           error={error}
           wide
@@ -1671,7 +1841,7 @@ function App() {
           <form onSubmit={saveUser}>
             {session.auth_mode === "entra" && (
               <label>
-                Entra object ID
+                ID do objeto no Entra
                 <input
                   name="oid"
                   required
@@ -1681,7 +1851,7 @@ function App() {
               </label>
             )}
             <label>
-              Name
+              Nome completo
               <input
                 name="name"
                 required
@@ -1690,7 +1860,7 @@ function App() {
               />
             </label>
             <label>
-              Email
+              E-mail
               <input
                 name="email"
                 type="email"
@@ -1698,74 +1868,70 @@ function App() {
                 maxLength={254}
                 pattern="[^@]+@fiap\.com\.br"
                 defaultValue={editUser.email}
-                placeholder="name@fiap.com.br"
+                placeholder="nome@fiap.com.br"
               />
             </label>
             {session.auth_mode === "local" && (
               <label>
-                {editUser.id ? "Reset password" : "Password"}
+                {editUser.id ? "Redefinir senha" : "Senha"}
                 <input
                   name="password"
                   type="password"
                   autoComplete="new-password"
-                  minLength={15}
+                  minLength={8}
                   maxLength={128}
                   required={!editUser.id}
                 />
                 <small>
                   {editUser.id
-                    ? "Leave empty to keep the current password. Minimum 15 characters."
-                    : "Minimum 15 characters."}
+                    ? "Deixe em branco para manter a senha. Mínimo de 8 caracteres."
+                    : "Mínimo de 8 caracteres."}
                 </small>
               </label>
             )}
             <label>
-              Role
-              <select name="role" defaultValue={editUser.role}>
+              Perfil
+              <select
+                name="role"
+                value={editUser.role}
+                onChange={(e) =>
+                  setEditUser({ ...editUser, role: e.target.value })
+                }
+              >
                 <option value="monitor">Monitor</option>
-                <option value="viewer">Observer</option>
-                <option value="admin">Administrator</option>
+                <option value="support">Suporte</option>
+                <option value="admin">Administrador</option>
+                {editUser.role === "viewer" && (
+                  <option value="viewer">Observador (legado)</option>
+                )}
               </select>
             </label>
-            <fieldset>
-              <legend>Floors</legend>
-              <div className="floor-options">
-                {session.floors.map((f) => (
-                  <label key={f}>
-                    <input
-                      type="checkbox"
-                      name="floor"
-                      value={f}
-                      defaultChecked={editUser.grants.floors?.includes(f)}
-                    />
-                    {f}
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <label>
-              Additional laboratories
-              <input
-                name="labs"
-                defaultValue={editUser.grants.labs?.join(", ")}
-                placeholder="301, 302"
-              />
-            </label>
-            <label>
-              Additional computers
-              <input
-                name="computers"
-                defaultValue={editUser.grants.computers?.join(", ")}
-                placeholder="301-1, 301-100"
-              />
-            </label>
+            {editUser.role === "monitor" && (
+              <label>
+                Andar do monitor
+                <select
+                  name="floor"
+                  defaultValue={editUser.grants.floors?.[0] ?? ""}
+                  required
+                >
+                  <option value="" disabled>
+                    Selecione o andar
+                  </option>
+                  {session.floors.map((f) => (
+                    <option key={f} value={f}>
+                      Andar {f}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label className="checkbox-label">
               <input
                 type="checkbox"
                 name="enabled"
                 defaultChecked={editUser.enabled}
               />
-              Enabled
+              Ativo
             </label>
             <div className="modal-actions">
               <button
@@ -1773,10 +1939,10 @@ function App() {
                 className="secondary"
                 onClick={() => setEditUser(null)}
               >
-                Cancel
+                Cancelar
               </button>
               <button className="primary" disabled={busy}>
-                {busy ? "Saving…" : "Save"}
+                {busy ? "Salvando…" : "Salvar"}
               </button>
             </div>
           </form>
@@ -1784,13 +1950,13 @@ function App() {
       )}
       {passwordDialog && (
         <Modal
-          title="Change password"
+          title="Alterar senha"
           close={() => setPasswordDialog(false)}
           error={error}
         >
           <form onSubmit={changePassword}>
             <label>
-              Current password
+              Senha atual
               <input
                 name="current_password"
                 type="password"
@@ -1800,16 +1966,16 @@ function App() {
               />
             </label>
             <label>
-              New password
+              Nova senha
               <input
                 name="new_password"
                 type="password"
                 autoComplete="new-password"
                 required
-                minLength={15}
+                minLength={8}
                 maxLength={128}
               />
-              <small>Minimum 15 characters.</small>
+              <small>Mínimo de 8 caracteres.</small>
             </label>
             <div className="modal-actions">
               <button
@@ -1817,10 +1983,10 @@ function App() {
                 className="secondary"
                 onClick={() => setPasswordDialog(false)}
               >
-                Cancel
+                Cancelar
               </button>
               <button className="primary" disabled={busy}>
-                {busy ? "Saving…" : "Save"}
+                {busy ? "Salvando…" : "Salvar"}
               </button>
             </div>
           </form>
@@ -1828,14 +1994,14 @@ function App() {
       )}
       {newLab && (
         <Modal
-          title="Add laboratory"
+          title="Adicionar laboratório"
           close={() => setNewLab(false)}
           error={error}
         >
           <form onSubmit={saveLab}>
             <div className="form-row">
               <label>
-                Floor
+                Andar
                 <select name="floor" defaultValue={floor || 1}>
                   {session.floors.map((f) => (
                     <option key={f}>{f}</option>
@@ -1843,7 +2009,7 @@ function App() {
                 </select>
               </label>
               <label>
-                Laboratory number
+                Número da sala
                 <input
                   name="number"
                   type="number"
@@ -1855,28 +2021,18 @@ function App() {
               </label>
             </div>
             <label>
-              Laboratory name
+              Nome do laboratório
               <input
                 name="label"
                 required
-                placeholder="Lab 301"
+                placeholder="Laboratório 301"
                 maxLength={80}
               />
             </label>
-            <label>
-              Student computers
-              <input
-                name="students"
-                type="number"
-                min="0"
-                max="99"
-                defaultValue="30"
-                required
-              />
-            </label>
+            <QuantityFields />
             <label className="checkbox-label">
               <input name="professor" type="checkbox" defaultChecked />
-              Include professor workstation (.100)
+              Incluir computador do professor (.100)
             </label>
             <div className="modal-actions">
               <button
@@ -1884,10 +2040,10 @@ function App() {
                 className="secondary"
                 onClick={() => setNewLab(false)}
               >
-                Cancel
+                Cancelar
               </button>
               <button className="primary" disabled={busy}>
-                Add laboratory
+                Adicionar laboratório
               </button>
             </div>
           </form>
@@ -1932,10 +2088,13 @@ function Jobs({ jobs }: { jobs: Job[] }) {
             </span>
             <div>
               <strong>{labels[j.action]}</strong>
-              <small>{j.hostname || j.computer_id}</small>
+              <small>
+                {j.hostname || j.computer_id}
+                {j.actor_name ? ` · ${j.actor_name}` : ""}
+              </small>
             </div>
             <span className="job-message">
-              {j.message || "Awaiting controller"}
+              {j.message || "Aguardando o controlador"}
             </span>
             <span className={`job-state ${j.state}`}>{labels[j.state]}</span>
             <span className="job-time">{time(j.created)}</span>
@@ -1944,7 +2103,7 @@ function Jobs({ jobs }: { jobs: Job[] }) {
       ) : (
         <div className="empty compact">
           <Clock3 size={20} />
-          <span>No commands yet.</span>
+          <span>Nenhum comando enviado.</span>
         </div>
       )}
     </div>
@@ -2014,7 +2173,7 @@ function Modal({
           <h2>{title}</h2>
           <button
             className="icon-button"
-            aria-label="Close dialog"
+            aria-label="Fechar janela"
             onClick={close}
           >
             <X size={20} />

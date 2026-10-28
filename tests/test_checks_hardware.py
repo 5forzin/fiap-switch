@@ -172,7 +172,7 @@ def test_hardware_mismatch_date_persists_and_resolution_is_recorded(client):
     resolved = client.get("/api/hardware-events").json()[0]
     assert (
         resolved["resolved"] is not None
-        and resolved["resolution"] == "Hardware matches"
+        and resolved["resolution"] == "Hardware dentro do padrão"
     )
     pc = next(
         p

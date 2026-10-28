@@ -27,9 +27,9 @@ def client(tmp_path, encoded_password):
     )
     with TestClient(create_app(cfg), base_url=cfg.base_url) as c:
         with connect(cfg.database_path) as db:
-            for role in ("admin", "monitor", "viewer"):
+            for role in ("admin", "support", "monitor", "viewer"):
                 db.execute(
-                    "INSERT INTO users VALUES (?,?,?,?,?,?)",
+                    "INSERT INTO users(id,email,name,role,enabled,grants) VALUES (?,?,?,?,?,?)",
                     (
                         f"test-{role}",
                         f"{role}@fiap.com.br",

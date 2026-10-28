@@ -29,8 +29,8 @@ def initialize(settings):
             CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY, email TEXT NOT NULL, name TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('admin','monitor','viewer')),
-                enabled INTEGER NOT NULL DEFAULT 1, grants TEXT NOT NULL DEFAULT '{}'
+                role TEXT NOT NULL CHECK(role IN ('admin','support','monitor','viewer')),
+                enabled INTEGER NOT NULL DEFAULT 1, grants TEXT NOT NULL DEFAULT '{}', deleted_at REAL
             );
             CREATE TABLE IF NOT EXISTS credentials (
                 user_id TEXT PRIMARY KEY REFERENCES users(id),
@@ -41,6 +41,10 @@ def initialize(settings):
                 id TEXT PRIMARY KEY, floor INTEGER NOT NULL, number INTEGER NOT NULL,
                 label TEXT NOT NULL, subnet TEXT NOT NULL, broadcast TEXT NOT NULL,
                 collector_id TEXT NOT NULL, UNIQUE(floor,number), UNIQUE(subnet)
+            );
+            CREATE TABLE IF NOT EXISTS lab_inventory (
+                lab_id TEXT PRIMARY KEY REFERENCES labs(id),
+                students INTEGER CHECK(students BETWEEN 0 AND 99)
             );
             CREATE TABLE IF NOT EXISTS computers (
                 id TEXT PRIMARY KEY, lab_id TEXT NOT NULL REFERENCES labs(id),
@@ -111,7 +115,33 @@ def initialize(settings):
             CREATE INDEX IF NOT EXISTS hardware_events_computer ON hardware_events(computer_id,resolved);
             CREATE UNIQUE INDEX IF NOT EXISTS hardware_events_open ON hardware_events(computer_id) WHERE resolved IS NULL;
         ''')
+        schema = db.execute("SELECT sql FROM sqlite_master WHERE name='users'").fetchone()[0]
+        if "'support'" not in schema:
+            db.commit()
+            db.execute('PRAGMA foreign_keys=OFF')
+            try:
+                db.execute('BEGIN IMMEDIATE')
+                db.execute("""CREATE TABLE users_updated (
+                    id TEXT PRIMARY KEY, email TEXT NOT NULL, name TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('admin','support','monitor','viewer')),
+                    enabled INTEGER NOT NULL DEFAULT 1, grants TEXT NOT NULL DEFAULT '{}', deleted_at REAL
+                )""")
+                db.execute('INSERT INTO users_updated(id,email,name,role,enabled,grants) SELECT id,email,name,role,enabled,grants FROM users')
+                db.execute('DROP TABLE users')
+                db.execute('ALTER TABLE users_updated RENAME TO users')
+                if db.execute('PRAGMA foreign_key_check').fetchone():
+                    raise ValueError('Falha na integridade das contas após a migração.')
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                db.execute('PRAGMA foreign_keys=ON')
         additions = {
+            'users': {'deleted_at': 'REAL'},
+            'jobs': {'actor_role': "TEXT NOT NULL DEFAULT ''"},
+            'checks': {'actor_role': "TEXT NOT NULL DEFAULT ''"},
+            'audit': {'initiator_id': "TEXT NOT NULL DEFAULT ''", 'actor_role': "TEXT NOT NULL DEFAULT ''"},
             'computers': {'hardware': "TEXT NOT NULL DEFAULT '{}'", 'hardware_state': "TEXT NOT NULL DEFAULT 'unconfigured'",
                 'hardware_checked_at': 'REAL', 'hardware_differences': "TEXT NOT NULL DEFAULT '[]'", 'hardware_mismatch_since': 'REAL'},
             'check_results': {'hardware': "TEXT NOT NULL DEFAULT '{}'", 'hardware_state': "TEXT NOT NULL DEFAULT 'unknown'", 'hardware_differences': "TEXT NOT NULL DEFAULT '[]'"},
@@ -122,11 +152,15 @@ def initialize(settings):
             for name, definition in fields.items():
                 if name not in existing:
                     db.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
+        for table in ('jobs', 'checks'):
+            db.execute(f"UPDATE {table} SET actor_role=COALESCE((SELECT role FROM users WHERE users.id={table}.actor_id),'unknown') WHERE actor_role='' ")
+        db.execute("UPDATE audit SET initiator_id=actor WHERE initiator_id=''")
+        db.execute("UPDATE audit SET actor_role=COALESCE((SELECT role FROM users WHERE users.id=audit.initiator_id),CASE WHEN actor='collector' AND action IN ('hardware_mismatch','hardware_resolved') THEN 'system' ELSE 'unknown' END) WHERE actor_role=''")
         if 'username' not in {r['name'] for r in db.execute('PRAGMA table_info(login_attempts)')}:
             db.execute("ALTER TABLE login_attempts ADD COLUMN username TEXT NOT NULL DEFAULT ''")
         mode = db.execute("SELECT value FROM metadata WHERE key='mode'").fetchone()
         if mode and mode['value'] != settings.app_mode:
-            raise ValueError('Demo and production must use separate databases.')
+            raise ValueError('Demonstração e produção exigem bancos de dados separados.')
         db.execute("INSERT OR IGNORE INTO metadata VALUES ('mode',?)", (settings.app_mode,))
         db.execute('INSERT OR IGNORE INTO collectors(id) VALUES (?)', (settings.collector_id,))
         legacy = db.execute("SELECT * FROM users WHERE id='temporary-admin'").fetchone()
@@ -146,7 +180,7 @@ def initialize(settings):
         if settings.auth_mode == 'entra' and settings.bootstrap_admin_oid and settings.entra_tenant_id:
             db.execute('INSERT OR IGNORE INTO users(id,email,name,role) VALUES (?,?,?,?)', (
                 f'{settings.entra_tenant_id}:{settings.bootstrap_admin_oid}',
-                'admin@fiap.com.br', 'Administrator', 'admin'))
+                'admin@fiap.com.br', 'Administrador', 'admin'))
 
 
 
@@ -164,9 +198,12 @@ def user_public(row):
 def allowed(user, computer, control=False):
     if not user['enabled'] or (control and user['role'] == 'viewer'):
         return False
-    if user['role'] == 'admin':
+    if user['role'] in ('admin', 'support'):
         return True
     grants = user['grants']
+    if user['role'] == 'monitor':
+        floors = grants.get('floors', [])
+        return len(floors) == 1 and computer['floor'] == floors[0]
     return (computer['floor'] in grants.get('floors', [])
             or computer['lab_id'] in grants.get('labs', [])
             or computer['id'] in grants.get('computers', []))

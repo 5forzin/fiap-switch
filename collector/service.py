@@ -44,8 +44,8 @@ $adapter = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=
 } | ConvertTo-Json -Compress
 '''
 POWER_SCRIPTS = {
-    'shutdown': 'shutdown.exe /s /t 60 /d p:0:0 /c "FIAP support: scheduled shutdown in 60 seconds. Save your work."; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
-    'restart': 'shutdown.exe /r /t 60 /d p:0:0 /c "FIAP support: scheduled restart in 60 seconds. Save your work."; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
+    'shutdown': 'shutdown.exe /s /t 60 /d p:0:0 /c "Suporte FIAP: desligamento em 60 segundos. Salve seu trabalho."; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
+    'restart': 'shutdown.exe /r /t 60 /d p:0:0 /c "Suporte FIAP: reinicialização em 60 segundos. Salve seu trabalho."; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
 }
 
 
@@ -53,18 +53,18 @@ class Controller:
     def __init__(self):
         self.base_url = os.environ['SWITCH_URL'].rstrip('/')
         if urlparse(self.base_url).scheme != 'https':
-            raise ValueError('Collector communication requires HTTPS.')
+            raise ValueError('A comunicação do controlador exige HTTPS.')
         self.networks = [ipaddress.ip_network(c.strip()) for c in os.getenv('ALLOWED_CIDRS', '10.3.0.0/16').split(',')]
         self.username = os.environ['WINRM_USERNAME']
         self.password = os.environ.get('WINRM_PASSWORD', '')
         self.transport = os.getenv('WINRM_TRANSPORT', 'ntlm')
         if self.transport not in ('ntlm', 'kerberos'):
-            raise ValueError('Only NTLM and Kerberos authentication are supported.')
+            raise ValueError('Somente autenticação NTLM e Kerberos é permitida.')
         if self.transport == 'ntlm' and not self.password:
-            raise ValueError('WINRM_PASSWORD is required for NTLM.')
+            raise ValueError('WINRM_PASSWORD é obrigatório para NTLM.')
         self.scheme = os.getenv('WINRM_SCHEME', 'https')
         if self.scheme != 'https' and self.transport != 'kerberos':
-            raise ValueError('HTTP is supported only with Kerberos and message encryption.')
+            raise ValueError('HTTP exige Kerberos com criptografia das mensagens.')
         self.port = int(os.getenv('WINRM_PORT', '5986' if self.scheme == 'https' else '5985'))
         self.ca = os.getenv('WINRM_CA_BUNDLE') or None
         self.workers = min(16, max(1, int(os.getenv('PROBE_WORKERS', '8'))))
@@ -77,16 +77,16 @@ class Controller:
     def target(self, computer):
         ip = ipaddress.ip_address(computer['ip'])
         if not any(ip in network for network in self.networks):
-            raise ValueError('Computer is outside allowed LAN networks.')
+            raise ValueError('O computador está fora das redes locais permitidas.')
         host = computer.get('hostname') or str(ip)
         if self.transport == 'kerberos' and not computer.get('hostname'):
-            raise ValueError('Kerberos requires a registered DNS hostname.')
+            raise ValueError('Kerberos exige um nome DNS cadastrado.')
         if host != str(ip):
             addresses = {ipaddress.ip_address(item[4][0]) for item in socket.getaddrinfo(host, self.port, family=socket.AF_INET)}
             if not addresses or any(not any(address in network for network in self.networks) for address in addresses):
-                raise ValueError('Hostname resolved outside the allowed LAN networks.')
+                raise ValueError('O nome de rede resolveu para um endereço fora das redes permitidas.')
             if ip not in addresses:
-                raise ValueError('Hostname does not resolve to the registered IP.')
+                raise ValueError('O nome de rede não corresponde ao IP cadastrado.')
         return f'{self.scheme}://{host}:{self.port}/wsman'
 
     def session(self, computer):
@@ -101,39 +101,39 @@ class Controller:
                 pass
             result = self.session(computer).run_ps(HEALTH_SCRIPT)
             if result.status_code:
-                return {'computer_id': computer['id'], 'status': 'unreachable', 'issue': 'WinRM health query was rejected.'}
+                return {'computer_id': computer['id'], 'status': 'unreachable', 'issue': 'A consulta de estado foi recusada pelo WinRM.'}
             metrics = json.loads(result.std_out.decode('utf-8-sig').strip())
             mac = metrics.pop('mac', '') or ''
             hardware = metrics.pop('hardware', None)
             return {'computer_id': computer['id'], 'status': 'online', 'metrics': metrics, 'mac': mac, 'hardware': hardware}
         except Exception as error:
-            # Error text can contain authentication details; report only the exception class.
-            return {'computer_id': computer['id'], 'status': 'unreachable', 'issue': f'WinRM could not verify this computer ({type(error).__name__}).'}
+            # A mensagem da exceção pode conter credenciais; registre somente a classe.
+            return {'computer_id': computer['id'], 'status': 'unreachable', 'issue': f'O WinRM não conseguiu verificar este computador ({type(error).__name__}).'}
 
     def wake(self, computer):
         self.target(computer)
         raw = bytes.fromhex(computer['mac'].replace(':', '').replace('-', ''))
         if len(raw) != 6 or raw[0] & 1 or raw == bytes(6):
-            raise ValueError('A unicast MAC address is required.')
+            raise ValueError('É necessário um endereço MAC unicast.')
         broadcast = ipaddress.ip_address(computer['broadcast'])
         subnet = ipaddress.ip_network(f"{computer['ip']}/24", strict=False)
         if broadcast != subnet.broadcast_address or not any(broadcast in network for network in self.networks):
-            raise ValueError('Invalid laboratory broadcast address.')
+            raise ValueError('Endereço de broadcast do laboratório inválido.')
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             for _ in range(3):
                 sock.sendto(b'\xff' * 6 + raw * 16, (str(broadcast), 9))
-        return 'Wake-on-LAN packet sent. Verify power state on the next health check.'
+        return 'Pacote Wake-on-LAN enviado. Aguarde a próxima leitura de estado.'
 
     def execute(self, job):
         if job['action'] == 'wake':
             return self.wake(job)
         if job['action'] not in POWER_SCRIPTS:
-            raise ValueError('Unsupported power action.')
+            raise ValueError('Comando de energia não permitido.')
         result = self.session(job).run_ps(POWER_SCRIPTS[job['action']])
         if result.status_code:
-            raise RuntimeError('Windows rejected the power command.')
-        return 'Windows accepted the command with a 60-second notice. Delivery does not confirm power state.'
+            raise RuntimeError('O Windows recusou o comando de energia.')
+        return 'O Windows aceitou o comando com aviso de 60 segundos. O envio não confirma o estado de energia.'
 
     def post(self, path, body=None):
         response = self.client.post(path, json=body)
@@ -147,10 +147,10 @@ class Controller:
         try:
             message, state = self.execute(job), 'completed'
         except Exception as error:
-            message, state = f'Command failed ({type(error).__name__}). Verify before retrying.', 'failed'
-        # An uncertain delivery is never executed a second time automatically.
+            message, state = f'O comando falhou ({type(error).__name__}). Verifique antes de tentar novamente.', 'failed'
+        # Comandos com resultado incerto não são executados novamente de forma automática.
         self.post(f"/api/collector/jobs/{job['id']}/result", {'lease_token': job['lease_token'], 'state': state, 'message': message})
-        log.info('Job %s: %s', job['id'], state)
+        log.info('Comando %s: %s', job['id'], state)
 
     def monitor(self):
         while True:
@@ -170,9 +170,9 @@ class Controller:
                             flushed = time.monotonic()
                     if batch:
                         self.post('/api/collector/reports', {'reports': batch})
-                log.info('Checked %s computers.', len(computers))
+                log.info('%s computadores verificados.', len(computers))
             except Exception as error:
-                log.warning('Health cycle failed (%s).', type(error).__name__)
+                log.warning('Falha no ciclo de verificação (%s).', type(error).__name__)
             self.check_requested.wait(self.interval)
             self.check_requested.clear()
 
@@ -187,7 +187,7 @@ class Controller:
                     if pending.json()['pending']:
                         self.check_requested.set()
                 except Exception as error:
-                    log.warning('Command polling failed (%s).', type(error).__name__)
+                    log.warning('Falha na consulta de comandos (%s).', type(error).__name__)
                 time.sleep(2)
 
 

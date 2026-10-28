@@ -6,17 +6,18 @@ from fastapi import Depends, HTTPException
 
 from backend.db import allowed, connect
 from backend.models import HardwareStandard
+from backend.audit import audit
 
 
 def compare_hardware(actual, standard):
     differences, missing = [], []
     labels = {
-        "logical_cpus": "Logical CPUs",
+        "logical_cpus": "CPUs lógicas",
         "memory_gib": "RAM (GiB)",
-        "storage_gib": "Storage (GiB)",
-        "disk_count": "Physical disks",
-        "cpu_model": "CPU model",
-        "gpu_model": "GPU model",
+        "storage_gib": "Armazenamento (GiB)",
+        "disk_count": "Discos físicos",
+        "cpu_model": "Modelo de CPU",
+        "gpu_model": "Modelo de GPU",
     }
     for key in ("logical_cpus", "memory_gib", "storage_gib", "disk_count"):
         expected = standard.get(key)
@@ -24,7 +25,7 @@ def compare_hardware(actual, standard):
             continue
         value = actual.get(key)
         if value is None:
-            missing.append(f"No reading for {labels[key]}")
+            missing.append(f"Sem leitura de {labels[key]}")
             continue
         tolerance = expected * 0.05 if key.endswith("_gib") else 0
         valid = (
@@ -33,17 +34,21 @@ def compare_hardware(actual, standard):
             else abs(value - expected) <= tolerance
         )
         if not valid:
-            differences.append(f"{labels[key]}: expected {expected}, detected {value}")
+            esperado = f"{expected:g}".replace(".", ",")
+            detectado = f"{value:g}".replace(".", ",")
+            differences.append(
+                f"{labels[key]}: esperado {esperado}, detectado {detectado}"
+            )
     for key in ("cpu_model", "gpu_model"):
         expected = standard.get(key)
         if not expected:
             continue
         values = actual.get("gpu_models") if key == "gpu_model" else [actual.get(key)]
         if values is None or any(value is None for value in values):
-            missing.append(f"No reading for {labels[key]}")
+            missing.append(f"Sem leitura de {labels[key]}")
         elif not any(expected.casefold() in value.casefold() for value in values):
             differences.append(
-                f"{labels[key]}: expected {expected}, detected {', '.join(values) or 'none'}"
+                f"{labels[key]}: esperado {expected}, detectado {', '.join(values) or 'nenhum'}"
             )
     return (
         "mismatch" if differences else "unknown" if missing else "match"
@@ -68,7 +73,7 @@ def update_hardware(db, computer, actual, now):
     if state == "mismatch":
         if incident and incident["expected"] != json.dumps(standard, sort_keys=True):
             db.execute(
-                "UPDATE hardware_events SET resolved=?,resolution='Standard updated' WHERE id=?",
+                "UPDATE hardware_events SET resolved=?,resolution='Padrão atualizado' WHERE id=?",
                 (now, incident["id"]),
             )
             incident = None
@@ -88,16 +93,13 @@ def update_hardware(db, computer, actual, now):
                     json.dumps(differences),
                 ),
             )
-            db.execute(
-                "INSERT INTO audit(actor,action,target,computer_id,created,detail) VALUES (?,?,?,?,?,?)",
-                (
-                    "collector",
-                    "hardware_mismatch",
-                    computer["id"],
-                    computer["id"],
-                    now,
-                    json.dumps(differences),
-                ),
+            audit(
+                db,
+                "collector",
+                "hardware_mismatch",
+                computer["id"],
+                computer["id"],
+                json.dumps(differences),
             )
         else:
             db.execute(
@@ -110,14 +112,13 @@ def update_hardware(db, computer, actual, now):
                 "UPDATE hardware_events SET resolved=?,resolution=? WHERE id=?",
                 (
                     now,
-                    "Hardware matches" if state == "match" else "Standard disabled",
+                    "Hardware dentro do padrão"
+                    if state == "match"
+                    else "Padrão desativado",
                     incident["id"],
                 ),
             )
-            db.execute(
-                "INSERT INTO audit(actor,action,target,computer_id,created) VALUES (?,?,?,?,?)",
-                ("collector", "hardware_resolved", computer["id"], computer["id"], now),
-            )
+            audit(db, "collector", "hardware_resolved", computer["id"], computer["id"])
         since = None
     db.execute(
         "UPDATE computers SET hardware=?,hardware_state=?,hardware_checked_at=?,hardware_differences=?,hardware_mismatch_since=? WHERE id=?",
@@ -137,7 +138,7 @@ def register_hardware(app, cfg, current_user, admin):
     def save_standard(lab_id: str, payload: HardwareStandard, user=Depends(admin)):
         with connect(cfg.database_path) as db:
             if not db.execute("SELECT 1 FROM labs WHERE id=?", (lab_id,)).fetchone():
-                raise HTTPException(404, "Laboratory not found.")
+                raise HTTPException(404, "Laboratório não encontrado.")
             now = time.time()
             db.execute(
                 "INSERT INTO hardware_standards VALUES (?,?,?,?) ON CONFLICT(lab_id) DO UPDATE SET settings=excluded.settings,updated=excluded.updated,updated_by=excluded.updated_by",
@@ -147,15 +148,12 @@ def register_hardware(app, cfg, current_user, admin):
                 "UPDATE computers SET hardware_state='unknown' WHERE lab_id=?",
                 (lab_id,),
             )
-            db.execute(
-                "INSERT INTO audit(actor,action,target,created,detail) VALUES (?,?,?,?,?)",
-                (
-                    user["id"],
-                    "hardware_standard_updated",
-                    lab_id,
-                    now,
-                    payload.model_dump_json(),
-                ),
+            audit(
+                db,
+                user["id"],
+                "hardware_standard_updated",
+                lab_id,
+                detail=payload.model_dump_json(),
             )
         return {"ok": True}
 

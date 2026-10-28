@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import type { Api, Hardware } from "./inventory";
+import { quantidade } from "./inventory";
 
 type Summary = {
   total: number;
@@ -41,17 +42,21 @@ type Page = {
   message?: string;
 };
 const when = (value?: number | null) =>
-  value ? new Date(value * 1000).toLocaleString() : "—";
+  value
+    ? new Date(value * 1000).toLocaleString("pt-BR", {
+        timeZone: "America/Sao_Paulo",
+      })
+    : "—";
 const stateLabel: Record<string, string> = {
-  online: "Online",
-  unreachable: "No response",
-  unknown: "Not verified",
-  queued: "Checking",
-  completed: "Completed",
-  failed: "Failed",
-  match: "Matches",
-  mismatch: "Mismatch",
-  unconfigured: "No standard",
+  online: "Ligado",
+  unreachable: "Sem resposta",
+  unknown: "Não verificado",
+  queued: "Verificando",
+  completed: "Concluída",
+  failed: "Falhou",
+  match: "Conforme",
+  mismatch: "Divergente",
+  unconfigured: "Sem padrão",
 };
 
 export function ChecksPanel({
@@ -153,15 +158,15 @@ export function ChecksPanel({
   return (
     <section className="panel">
       <div className="panel-title">
-        <h2>Floor verification</h2>
+        <h2>Verificação dos andares</h2>
         {canRun && (
           <button className="primary" disabled={busy} onClick={check}>
             <RefreshCw size={15} />
             {busy
-              ? "Requesting…"
+              ? "Solicitando…"
               : floor === "all"
-                ? "Check my floors"
-                : `Check floor ${floor}`}
+                ? "Verificar meus andares"
+                : `Verificar andar ${floor}`}
           </button>
         )}
       </div>
@@ -170,56 +175,56 @@ export function ChecksPanel({
           className={mode === "daily" ? "active" : ""}
           onClick={() => setMode("daily")}
         >
-          Daily history
+          Histórico diário
         </button>
         <button
           className={mode === "runs" ? "active" : ""}
           onClick={() => setMode("runs")}
         >
-          Verifications
+          Verificações
         </button>
       </div>
       <div className="filters history-filters">
         <label>
-          Floor
+          Andar
           <select
-            aria-label="History floor"
+            aria-label="Andar do histórico"
             value={floor}
             onChange={(e) => setFloor(e.target.value)}
           >
-            <option value="all">All assigned floors</option>
+            <option value="all">Todos os andares permitidos</option>
             {floors.map((f) => (
               <option key={f} value={f}>
-                Floor {f}
+                Andar {f}
               </option>
             ))}
           </select>
         </label>
         {mode === "daily" ? (
           <label>
-            Date
+            Data
             <select
-              aria-label="History date"
+              aria-label="Data do histórico"
               value={day}
               onChange={(e) => setDay(e.target.value)}
             >
-              {!days.length && <option value="">No history</option>}
+              {!days.length && <option value="">Sem histórico</option>}
               {days.map((d) => (
                 <option key={d.day} value={d.day}>
-                  {d.day}
+                  {d.day.split("-").reverse().join("/")}
                 </option>
               ))}
             </select>
           </label>
         ) : (
           <label>
-            Verification
+            Verificação
             <select
-              aria-label="Verification"
+              aria-label="Verificação"
               value={run}
               onChange={(e) => setRun(e.target.value)}
             >
-              {!runs.length && <option value="">No verifications</option>}
+              {!runs.length && <option value="">Sem verificações</option>}
               {runs.map((r) => (
                 <option key={r.id} value={r.id}>
                   {when(r.created)} · {stateLabel[r.state]}
@@ -229,32 +234,35 @@ export function ChecksPanel({
           </label>
         )}
         <label>
-          Status
+          Situação
           <select
-            aria-label="History status"
+            aria-label="Situação no histórico"
             value={status}
             onChange={(e) => setStatus(e.target.value)}
           >
-            <option value="all">All statuses</option>
-            <option value="online">Online</option>
-            <option value="unreachable">No response</option>
-            <option value="unknown">Not verified</option>
+            <option value="all">Todas as situações</option>
+            <option value="online">Ligado</option>
+            <option value="unreachable">Sem resposta</option>
+            <option value="unknown">Não verificado</option>
           </select>
         </label>
       </div>
       {result ? (
         <>
           <div className="check-summary">
-            <span>{result.summary.total} computers</span>
-            <span>{result.summary.online} online</span>
-            <span>{result.summary.unreachable} no response</span>
-            <span>{result.summary.unknown} unverified</span>
+            <span>
+              {quantidade(result.summary.total, "computador", "computadores")}
+            </span>
+            <span>{quantidade(result.summary.online, "ligado")}</span>
+            <span>{result.summary.unreachable} sem resposta</span>
+            <span>{quantidade(result.summary.unknown, "não verificado")}</span>
             <span
               className={
                 result.summary.hardware_mismatches ? "attention-text" : ""
               }
             >
-              {result.summary.hardware_mismatches} hardware mismatch{result.summary.hardware_mismatches === 1 ? "" : "es"}
+              {result.summary.hardware_mismatches} divergência
+              {result.summary.hardware_mismatches === 1 ? "" : "s"} de hardware
             </span>
             {mode === "runs" && (
               <strong>{stateLabel[result.state || "unknown"]}</strong>
@@ -265,12 +273,12 @@ export function ChecksPanel({
             <table>
               <thead>
                 <tr>
-                  <th>COMPUTER</th>
-                  <th>FLOOR / LAB</th>
-                  <th>STATUS</th>
-                  <th>LAST CONFIRMED ONLINE</th>
+                  <th>COMPUTADOR</th>
+                  <th>ANDAR / SALA</th>
+                  <th>SITUAÇÃO</th>
+                  <th>ÚLTIMA RESPOSTA CONFIRMADA</th>
                   <th>HARDWARE</th>
-                  <th>CHECKED</th>
+                  <th>VERIFICADO EM</th>
                 </tr>
               </thead>
               <tbody>
@@ -296,7 +304,7 @@ export function ChecksPanel({
                       <span
                         className={`status ${pc.hardware_state === "mismatch" ? "unreachable" : pc.hardware_state === "match" ? "online" : "unknown"}`}
                       >
-                        {stateLabel[pc.hardware_state] || "Not verified"}
+                        {stateLabel[pc.hardware_state] || "Não verificado"}
                       </span>
                       {pc.hardware_differences.map((d) => (
                         <small className="wrap-text" key={d}>
@@ -310,11 +318,11 @@ export function ChecksPanel({
               </tbody>
             </table>
             {!result.computers.length && (
-              <div className="empty">No computers match this status.</div>
+              <div className="empty">Nenhum computador nesta situação.</div>
             )}
           </div>
           <div className="table-footer">
-            <span>{result.total} results</span>
+            <span>{quantidade(result.total, "resultado")}</span>
             {result.total > 50 && (
               <div className="pagination">
                 <button
@@ -322,31 +330,32 @@ export function ChecksPanel({
                   disabled={page === 1}
                   onClick={() => setPage(page - 1)}
                 >
-                  Previous
+                  Anterior
                 </button>
                 <span>
-                  Page {page} of {Math.ceil(result.total / 50)}
+                  Página {page} de {Math.ceil(result.total / 50)}
                 </span>
                 <button
                   className="secondary small"
                   disabled={page * 50 >= result.total}
                   onClick={() => setPage(page + 1)}
                 >
-                  Next
+                  Próxima
                 </button>
               </div>
             )}
           </div>
           <p className="history-note">
-            No response may indicate a network or WinRM failure. Daily history
-            keeps each computer's latest result and last confirmed online time.
+            Sem resposta pode indicar falha de rede ou do WinRM. O histórico
+            diário guarda a leitura mais recente e a última resposta confirmada
+            de cada computador.
           </p>
         </>
       ) : (
         <div className="empty">
           {mode === "daily"
-            ? "No observations recorded for this floor."
-            : "Run a floor verification to create a saved result."}
+            ? "Nenhuma leitura registrada neste andar."
+            : "Verifique o andar para salvar um resultado."}
         </div>
       )}
     </section>

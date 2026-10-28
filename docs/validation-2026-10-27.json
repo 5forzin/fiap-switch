@@ -1,6 +1,6 @@
 {
   "date": "2026-10-27",
-  "environment": "Published HTTPS application, Windows Server 2022 controller and two native WinRM HTTPS targets in an isolated AWS VPC.",
+  "environment": "Aplicação publicada por HTTPS, controlador Windows Server 2022 e dois alvos WinRM HTTPS em uma VPC isolada na AWS.",
   "results": {
     "inventory_all_floors_addressing_and_unknown_state": {
       "passed": true,
@@ -265,7 +265,7 @@
         "received_udp_datagrams": 3,
         "payload_bytes": 102,
         "magic_packet_payload_matches_target_mac": true,
-        "limit": "EC2 does not support broadcast Wake-on-LAN; physical wake requires campus validation."
+        "limit": "A EC2 não oferece Wake-on-LAN por broadcast; o ligamento físico exige validação no campus."
       }
     },
     "live_unresponsive_hardware_is_unverified_and_prior_inventory_preserved": {
@@ -306,13 +306,58 @@
           "i-031c50f97a111b9e0": "stopped",
           "i-0e38330c8d82e6b92": "stopped"
         },
-        "storage": "Encrypted EBS retained with stopped instances for reuse."
+        "storage": "Volumes EBS criptografados mantidos com as instâncias desligadas para reutilização."
       }
     }
   },
   "limitations": [
-    "Physical Wake-on-LAN requires campus LAN validation because AWS VPC does not support broadcast.",
-    "Microsoft Entra SSO requires FIAP tenant application registration; local password accounts were tested.",
-    "Daily date rollover was verified by automated tests, not by changing live clocks."
-  ]
+    "O Wake-on-LAN físico exige validação na LAN do campus, pois a VPC da AWS não oferece broadcast.",
+    "O SSO Microsoft Entra exige o cadastro da aplicação no diretório FIAP; as contas locais com senha foram testadas.",
+    "A mudança diária de data foi validada por testes automatizados, sem alterar os relógios reais."
+  ],
+  "published_features": {
+    "perfis_e_privacidade_publicados": {
+      "passed": true,
+      "verified_at": 1793147438.2138672,
+      "evidence": {
+        "support_operations": true,
+        "monitor_floor": 3,
+        "admin_jobs_private": true,
+        "admin_checks_private": true,
+        "minimum_password_length": 8,
+        "account_deleted": true,
+        "shared_check": "2b1a176a-9c39-4fed-a539-4e9a86a1f972",
+        "summary": {
+          "total": 2,
+          "online": 2,
+          "unreachable": 0,
+          "unknown": 0,
+          "hardware_mismatches": 1
+        }
+      }
+    },
+    "quantidade_indefinida_publicada": {
+      "passed": true,
+      "verified_at": 1793147455.5906174,
+      "evidence": {
+        "lab_id": "301",
+        "students": null,
+        "computers_preserved": true
+      }
+    }
+  },
+  "presentation": {
+    "windows_instances_running": 3,
+    "changed_computer": "301-4",
+    "actual_storage_gib": 38,
+    "actual_disk_count": 2,
+    "expected_storage_gib": 30,
+    "expected_disk_count": 1,
+    "healthy_computer": "202-100",
+    "wake_on_lan": {
+      "packets_received": 3,
+      "bytes_per_packet": 102,
+      "physical_power_on_in_aws": false
+    }
+  }
 }
