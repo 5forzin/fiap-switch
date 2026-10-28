@@ -6,6 +6,26 @@ O site roda na Contabo. Um único controlador no servidor da LAN consulta a fila
 
 O acesso do servidor aos IPs permite consultar, reiniciar e desligar por WinRM. Para ligar, Wake-on-LAN depende do suporte da placa de rede, da configuração de BIOS/UEFI e da passagem dos pacotes pelos switches. Se os andares estiverem em VLANs diferentes, valide encaminhamento de broadcast ou retransmissor com a equipe de redes.
 
+## Instalação e modos de energia
+
+`sh setup.sh` no Linux ou `.\setup.ps1` no Windows apresenta a escolha do ambiente, gera segredos, cria a configuração do controlador e inicia o Docker. O administrador inicial é criado automaticamente na primeira inicialização do banco; a senha aleatória aparece uma única vez no terminal. Executar o instalador novamente preserva a configuração e as contas.
+
+| `POWER_MODE` | Ligar | Desligar e reiniciar | Escopo obrigatório |
+| --- | --- | --- | --- |
+| `fiap` | Wake-on-LAN | WinRM | `ALLOWED_CIDRS` do controlador |
+| `aws` | API EC2 | API EC2 | `AWS_REGION` e `AWS_VPC_ID` no site |
+| `azure` | API ARM | API ARM | `AZURE_SUBSCRIPTION_ID` e `AZURE_RESOURCE_GROUP` no site |
+
+O modo independe do sistema operacional da hospedagem. Linux com Docker é suportado; o controlador Python também pode rodar em Linux. Leituras e descoberta usam WinRM nos três modos. Alterar o modo exige reiniciar o site e cancela comandos ainda na fila, evitando executar uma solicitação no provedor errado.
+
+Na AWS, atribua ao controlador uma identidade com `ec2:DescribeInstances` e `ec2:StartInstances`, `ec2:StopInstances`, `ec2:RebootInstances` limitados aos alvos autorizados. O SDK usa a cadeia normal de credenciais, incluindo perfil de instância ou `AWS_PROFILE` em desenvolvimento. As operações encontram uma única instância pelo IP privado dentro da VPC configurada.
+
+No Azure, use uma identidade gerenciada dedicada ou as credenciais reconhecidas por `DefaultAzureCredential`, com leitura de interfaces e as ações `Microsoft.Compute/virtualMachines/start/action`, `deallocate/action` e `restart/action` no grupo autorizado. O IP precisa corresponder a uma única VM desse grupo. As APIs são assíncronas; a fila registra a aceitação, e a leitura seguinte confirma o estado. Não há fallback para outra forma de energia.
+
+[API EC2](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_DescribeInstances.html) · [API de energia Azure](https://learn.microsoft.com/en-us/rest/api/compute/virtual-machines/start?view=rest-compute-2025-04-01) · [Interfaces Azure](https://learn.microsoft.com/en-us/rest/api/virtualnetwork/network-interfaces/list?view=rest-virtualnetwork-2026-01-01) · [Identidade Azure](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.defaultazurecredential)
+
+Em salas com quantidade indefinida, **Verificações e histórico → Verificar andar** solicita a descoberta. A varredura se limita a `.1`–`.100` da sub-rede cadastrada, preserva máquinas existentes e só cadastra novas após uma leitura WinRM autenticada. Novos registros já passam pela comparação de hardware e entram na verificação e no histórico diário. Um equipamento desligado e nunca cadastrado não pode ser identificado por essa consulta.
+
 ## Contas e permissões
 
 O modo padrão é `AUTH_MODE=local`. Após preencher o ambiente privado, crie o primeiro administrador:

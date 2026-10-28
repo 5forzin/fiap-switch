@@ -155,8 +155,7 @@ class CheckInput(BaseModel):
         return value
 
 
-class Report(BaseModel):
-    computer_id: str
+class Observation(BaseModel):
     status: Literal['online', 'unreachable', 'unknown']
     metrics: dict = Field(default_factory=dict)
     mac: str = ''
@@ -182,6 +181,20 @@ class Report(BaseModel):
     @classmethod
     def mac_valid(cls, value):
         return ComputerInput.valid_mac(value)
+
+
+class Report(Observation):
+    computer_id: str
+
+
+class DiscoveredComputer(Observation):
+    number: int = Field(ge=1, le=100)
+    status: Literal['online'] = 'online'
+    hardware: Hardware
+
+
+class DiscoveryResult(BaseModel):
+    computers: list[DiscoveredComputer] = Field(default_factory=list, max_length=100)
 
 
 class Reports(BaseModel):

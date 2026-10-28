@@ -11,6 +11,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt && useradd --uid 10001 --create-home switch
 COPY backend/ backend/
 COPY scripts/create_admin.py scripts/create_admin.py
+COPY scripts/setup.py scripts/setup.py
 COPY --from=web /app/frontend/dist/ frontend/dist/
 RUN mkdir -p /app/data && chown switch:switch /app/data
 USER switch

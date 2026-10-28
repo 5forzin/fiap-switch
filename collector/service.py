@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import httpx
 import winrm
 from dotenv import load_dotenv
+from collector.power import execute_cloud
 
 load_dotenv(os.getenv('COLLECTOR_ENV', '.env.collector'))
 log = logging.getLogger('collector')
@@ -126,6 +127,12 @@ class Controller:
         return 'Pacote Wake-on-LAN enviado. Aguarde a próxima leitura de estado.'
 
     def execute(self, job):
+        mode = job.get('power', {}).get('mode', 'fiap')
+        if mode in ('aws', 'azure'):
+            self.target(job)
+            return execute_cloud(job)
+        if mode != 'fiap':
+            raise ValueError('Modo de operação inválido.')
         if job['action'] == 'wake':
             return self.wake(job)
         if job['action'] not in POWER_SCRIPTS:
@@ -152,6 +159,43 @@ class Controller:
         self.post(f"/api/collector/jobs/{job['id']}/result", {'lease_token': job['lease_token'], 'state': state, 'message': message})
         log.info('Comando %s: %s', job['id'], state)
 
+    def discover(self):
+        response = self.client.get('/api/collector/discovery')
+        response.raise_for_status()
+        scanned = {}
+        for task in response.json():
+            network = ipaddress.ip_network(task['subnet'], strict=True)
+            if network.version != 4 or network.prefixlen != 24 or not any(
+                network.version == allowed.version and network.subnet_of(allowed) for allowed in self.networks
+            ):
+                raise ValueError('A descoberta exige uma rede /24 dentro das redes locais permitidas.')
+            key = (task['lab_id'], task['subnet'], tuple(sorted(task['known_ips'])))
+            if key not in scanned:
+                known = set(task['known_ips'])
+                candidates = [{'id': f"{task['lab_id']}-{number}", 'ip': str(network.network_address + number)}
+                              for number in range(1, 101) if str(network.network_address + number) not in known]
+
+                def accepts_winrm(computer):
+                    self.target(computer)
+                    try:
+                        with socket.create_connection((computer['ip'], self.port), timeout=self.connect_timeout):
+                            return computer
+                    except OSError:
+                        return None
+
+                # A triagem TCP não autentica; só os alvos que respondem passam ao WinRM.
+                with concurrent.futures.ThreadPoolExecutor(max_workers=64) as pool:
+                    responsive = [computer for computer in pool.map(accepts_winrm, candidates) if computer]
+                found = []
+                with concurrent.futures.ThreadPoolExecutor(max_workers=self.workers) as pool:
+                    for computer, report in zip(responsive, pool.map(self.probe, responsive)):
+                        if report['status'] == 'online' and report.get('hardware') is not None:
+                            report.pop('computer_id')
+                            found.append({'number': int(computer['ip'].rsplit('.', 1)[1]), **report})
+                scanned[key] = found
+            result = self.post(f"/api/collector/discovery/{task['check_id']}/{task['lab_id']}", {'computers': scanned[key]})
+            log.info('Descoberta da sala %s: %s computadores cadastrados.', task['lab_id'], result['added'])
+
     def monitor(self):
         while True:
             try:
@@ -171,6 +215,7 @@ class Controller:
                     if batch:
                         self.post('/api/collector/reports', {'reports': batch})
                 log.info('%s computadores verificados.', len(computers))
+                self.discover()
             except Exception as error:
                 log.warning('Falha no ciclo de verificação (%s).', type(error).__name__)
             self.check_requested.wait(self.interval)

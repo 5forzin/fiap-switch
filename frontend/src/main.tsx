@@ -44,6 +44,7 @@ type User = {
 type Session = {
   user: User | null;
   auth_mode: "local" | "entra";
+  power_mode: "fiap" | "aws" | "azure";
   floors: number[];
 };
 type PC = {
@@ -137,6 +138,7 @@ const labels: Record<string, string> = {
   lab_quantity_updated: "Quantidade de computadores atualizada",
   lab_created: "Laboratório cadastrado",
   computer_updated: "Computador atualizado",
+  computer_discovered: "Computador descoberto",
   command_revoked: "Comando revogado",
   lease_expired: "Prazo de execução expirado",
   check_requested: "Verificação solicitada",
@@ -1621,8 +1623,9 @@ function App() {
           </p>
           {confirm.action !== "wake" && (
             <p className="muted">
-              O Windows exibirá um aviso de 60 segundos. Trabalhos não salvos
-              serão perdidos.
+              {session?.power_mode === "fiap"
+                ? "O Windows exibirá um aviso de 60 segundos. Trabalhos não salvos serão perdidos."
+                : "O comando será enviado à API do provedor. Salve os trabalhos antes de continuar."}
             </p>
           )}
           <div className="modal-actions">
@@ -1771,7 +1774,10 @@ function App() {
                   key={a}
                   className={a === "wake" ? "primary" : "secondary"}
                   disabled={
-                    pending.has(detail.id) || (a === "wake" && !detail.mac)
+                    pending.has(detail.id) ||
+                    (session?.power_mode === "fiap" &&
+                      a === "wake" &&
+                      !detail.mac)
                   }
                   onClick={() => {
                     setConfirm({ action: a, ids: [detail.id] });

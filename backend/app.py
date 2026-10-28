@@ -22,8 +22,9 @@ from backend.config import Settings, get_settings
 from backend.db import FLOORS, allowed, connect, initialize, inventory, user_public
 from backend.models import ActionInput, ComputerInput, JobResult, LabInput, LabQuantityInput, Reports, PasswordChange, PasswordLogin, UserInput
 from backend.passwords import hash_password, needs_rehash, verify_password
-from backend.checks import record_observation, register_checks
-from backend.hardware import register_hardware, update_hardware
+from backend.checks import register_checks, save_observation
+from backend.discovery import register_discovery
+from backend.hardware import register_hardware
 from backend.audit import activity_clause, audit
 
 
@@ -164,7 +165,7 @@ def create_app(settings: Settings | None = None):
             user = current_user(request)
         except HTTPException:
             user = None
-        return {'user': user, 'auth_mode': cfg.auth_mode, 'floors': FLOORS}
+        return {'user': user, 'auth_mode': cfg.auth_mode, 'floors': FLOORS, 'power_mode': cfg.power_mode}
 
     dummy_hash = hash_password(secrets.token_urlsafe(32))
 
@@ -281,7 +282,7 @@ def create_app(settings: Settings | None = None):
                     item['can_control'] = allowed(user, row, True)
                     computers.append(item)
             lab_ids = {c['lab_id'] for c in computers}
-            labs = [dict(l) for l in db.execute('SELECT * FROM labs ORDER BY floor,number') if user['role'] in ('admin', 'support') or l['id'] in lab_ids]
+            labs = [dict(l) for l in db.execute('SELECT * FROM labs ORDER BY floor,number') if l['id'] in lab_ids or allowed(user, {'id': '', 'lab_id': l['id'], 'floor': l['floor']})]
             standards = {r['lab_id']: json.loads(r['settings']) for r in db.execute('SELECT * FROM hardware_standards')}
             for lab in labs:
                 lab['hardware_standard'] = standards.get(lab['id'])
@@ -313,7 +314,7 @@ def create_app(settings: Settings | None = None):
             for cid in ids:
                 if cid not in lookup or not allowed(user, lookup[cid], True):
                     raise HTTPException(403, 'Você não tem permissão para controlar um ou mais computadores selecionados.')
-                if payload.action == 'wake' and not lookup[cid]['mac']:
+                if cfg.power_mode == 'fiap' and payload.action == 'wake' and not lookup[cid]['mac']:
                     raise HTTPException(409, 'Cadastre o endereço MAC antes de usar Wake-on-LAN.')
                 if db.execute("SELECT 1 FROM jobs WHERE computer_id=? AND state IN ('queued','running')", (cid,)).fetchone():
                     raise HTTPException(409, 'Um computador selecionado já tem um comando pendente.')
@@ -470,16 +471,7 @@ def create_app(settings: Settings | None = None):
             if any(r.computer_id not in valid for r in payload.reports):
                 raise HTTPException(403, 'O computador não pertence a este controlador.')
             for r in payload.reports:
-                now = time.time()
-                db.execute('UPDATE computers SET status=?,metrics=?,last_seen=?,issue=?,mac=CASE WHEN mac=\'\' AND ? != \'\' THEN ? ELSE mac END WHERE id=?',
-                           (r.status, json.dumps(r.metrics), now, r.issue, r.mac, r.mac, r.computer_id))
-                computer = db.execute('SELECT c.*,l.floor FROM computers c JOIN labs l ON l.id=c.lab_id WHERE c.id=?',(r.computer_id,)).fetchone()
-                if r.status=='online' and r.hardware is not None:
-                    update_hardware(db,computer,r.hardware.model_dump(exclude_none=True),now)
-                else:
-                    db.execute("UPDATE computers SET hardware_state=CASE WHEN hardware_state='unconfigured' THEN 'unconfigured' ELSE 'unknown' END WHERE id=?", (r.computer_id,))
-                computer = db.execute('SELECT c.*,l.floor FROM computers c JOIN labs l ON l.id=c.lab_id WHERE c.id=?',(r.computer_id,)).fetchone()
-                record_observation(db,computer,r,now)
+                save_observation(db, r, time.time())
             db.execute('UPDATE collectors SET last_seen=? WHERE id=?', (time.time(), cid))
         return {'ok': True}
 
@@ -504,7 +496,7 @@ def create_app(settings: Settings | None = None):
                 return {'job': None}
             lease = secrets.token_urlsafe(32)
             db.execute("UPDATE jobs SET state='running',lease_until=?,lease_token=? WHERE id=?", (time.time()+120, digest(lease), row['id']))
-            return {'job': {**dict(row), 'lease_token': lease}}
+            return {'job': {**dict(row), 'lease_token': lease, 'power': cfg.power_config()}}
 
     @app.post('/api/collector/jobs/{jid}/result')
     def result(jid: str, payload: JobResult, cid=Depends(collector)):
@@ -519,6 +511,7 @@ def create_app(settings: Settings | None = None):
         return {'ok': True}
 
     register_checks(app,cfg,current_user,collector)
+    register_discovery(app,cfg,collector)
     register_hardware(app,cfg,current_user,operator)
 
     root = Path(cfg.frontend_path)

@@ -9,6 +9,7 @@ from fastapi import Depends, HTTPException, Query
 from backend.db import allowed, connect, inventory
 from backend.models import CheckInput
 from backend.audit import activity_clause, activity_visible, audit
+from backend.hardware import update_hardware
 
 LOCAL_ZONE = ZoneInfo("America/Sao_Paulo")
 
@@ -50,6 +51,17 @@ def scope_clause(user, floor=None):
 SUMMARY_SQL = """COUNT(*) AS total,COALESCE(SUM(status='online'),0) AS online,
     COALESCE(SUM(status='unreachable'),0) AS unreachable,COALESCE(SUM(status='unknown'),0) AS unknown,
     COALESCE(SUM(hardware_state='mismatch'),0) AS hardware_mismatches"""
+
+
+def permitted_labs(db, user, floor=None):
+    return [lab['id'] for lab in db.execute('SELECT * FROM labs')
+            if (floor is None or lab['floor'] == floor)
+            and allowed(user, {'id': '', 'lab_id': lab['id'], 'floor': lab['floor']})]
+
+
+def discovery_scope(db, user, check_id, floor=None):
+    labs = set(permitted_labs(db, user, floor))
+    return [dict(row) for row in db.execute('SELECT * FROM check_discovery WHERE check_id=?', (check_id,)) if row['lab_id'] in labs]
 
 
 def query_page(db, table, where, values, state, page, size):
@@ -127,8 +139,28 @@ def record_observation(db, computer, report, now):
             now,
         ),
     )
+    complete_checks(db, now)
+
+
+def save_observation(db, report, now):
+    db.execute(
+        "UPDATE computers SET status=?,metrics=?,last_seen=?,issue=?,mac=CASE WHEN mac='' AND ? != '' THEN ? ELSE mac END WHERE id=?",
+        (report.status, json.dumps(report.metrics), now, report.issue, report.mac, report.mac, report.computer_id),
+    )
+    computer = db.execute('SELECT c.*,l.floor FROM computers c JOIN labs l ON l.id=c.lab_id WHERE c.id=?', (report.computer_id,)).fetchone()
+    if report.status == 'online' and report.hardware is not None:
+        update_hardware(db, computer, report.hardware.model_dump(exclude_none=True), now)
+    else:
+        db.execute("UPDATE computers SET hardware_state=CASE WHEN hardware_state='unconfigured' THEN 'unconfigured' ELSE 'unknown' END WHERE id=?", (report.computer_id,))
+    computer = db.execute('SELECT c.*,l.floor FROM computers c JOIN labs l ON l.id=c.lab_id WHERE c.id=?', (report.computer_id,)).fetchone()
+    record_observation(db, computer, report, now)
+
+
+def complete_checks(db, now):
     completed = db.execute(
-        "SELECT id,actor_id,actor_role FROM checks WHERE state='queued' AND NOT EXISTS(SELECT 1 FROM check_results r WHERE r.check_id=checks.id AND r.checked_at IS NULL)"
+        """SELECT id,actor_id,actor_role FROM checks WHERE state='queued'
+        AND NOT EXISTS(SELECT 1 FROM check_results r WHERE r.check_id=checks.id AND r.checked_at IS NULL)
+        AND NOT EXISTS(SELECT 1 FROM check_discovery d WHERE d.check_id=checks.id AND d.state='queued')"""
     ).fetchall()
     for check in completed:
         db.execute(
@@ -160,14 +192,22 @@ def register_checks(app, cfg, current_user, collector):
                 and (payload.floor is None or pc["floor"] == payload.floor)
                 and (not payload.lab_id or pc["lab_id"] == payload.lab_id)
             ]
-            if not pcs:
+            discovery_labs = [
+                lab for lab in db.execute('SELECT l.* FROM labs l JOIN lab_inventory i ON i.lab_id=l.id WHERE i.students IS NULL')
+                if allowed(user, {'id': '', 'lab_id': lab['id'], 'floor': lab['floor']})
+                and (payload.floor is None or lab['floor'] == payload.floor)
+                and (not payload.lab_id or lab['id'] == payload.lab_id)
+            ]
+            if not pcs and not discovery_labs:
                 raise HTTPException(404, "Nenhum computador permitido nesta seleção.")
             ids = {pc["id"] for pc in pcs}
             for old in db.execute(
                 "SELECT id FROM checks WHERE actor_id=? AND state='queued'",
                 (user["id"],),
             ):
-                if ids == {
+                if {lab['id'] for lab in discovery_labs} == {
+                    row['lab_id'] for row in db.execute('SELECT lab_id FROM check_discovery WHERE check_id=?', (old['id'],))
+                } and ids == {
                     row["computer_id"]
                     for row in db.execute(
                         "SELECT computer_id FROM check_results WHERE check_id=?",
@@ -195,6 +235,7 @@ def register_checks(app, cfg, current_user, collector):
                     for pc in pcs
                 ],
             )
+            db.executemany('INSERT INTO check_discovery(check_id,lab_id) VALUES (?,?)', [(cid, lab['id']) for lab in discovery_labs])
             audit(db, user["id"], "check_requested", cid)
         return {"id": cid}
 
@@ -202,39 +243,20 @@ def register_checks(app, cfg, current_user, collector):
     def checks(floor: int | None = None, user=Depends(current_user)):
         where, values = scope_clause(user, floor)
         privacy, privacy_values = activity_clause(user)
-        where += " AND " + privacy
-        values += privacy_values
         with connect(cfg.database_path) as db:
+            labs = permitted_labs(db, user, floor)
+            placeholders = ','.join('?' for _ in labs) or 'NULL'
             rows = db.execute(
-                f"SELECT c.*,{SUMMARY_SQL} FROM checks c JOIN check_results r ON r.check_id=c.id WHERE {where} GROUP BY c.id ORDER BY c.created DESC LIMIT 50",
-                values,
+                f"""SELECT c.* FROM checks c WHERE {privacy} AND
+                (EXISTS(SELECT 1 FROM check_results r WHERE r.check_id=c.id AND {where})
+                OR EXISTS(SELECT 1 FROM check_discovery d WHERE d.check_id=c.id AND d.lab_id IN ({placeholders})))
+                ORDER BY c.created DESC LIMIT 50""",
+                [*privacy_values, *values, *labs],
             ).fetchall()
-        return [
-            {
-                **{
-                    key: row[key]
-                    for key in (
-                        "id",
-                        "actor_id",
-                        "created",
-                        "finished",
-                        "state",
-                        "message",
-                    )
-                },
-                "summary": {
-                    key: row[key]
-                    for key in (
-                        "total",
-                        "online",
-                        "unreachable",
-                        "unknown",
-                        "hardware_mismatches",
-                    )
-                },
-            }
-            for row in rows
-        ]
+            return [{**dict(row), 'summary': dict(db.execute(
+                f'SELECT {SUMMARY_SQL} FROM check_results WHERE check_id=? AND {where}',
+                [row['id'], *values],
+            ).fetchone()), 'discovery': discovery_scope(db, user, row['id'], floor)} for row in rows]
 
     @app.get("/api/checks/{check_id}")
     def check_detail(
@@ -263,9 +285,10 @@ def register_checks(app, cfg, current_user, collector):
                 page,
                 size,
             )
-        if not check or not result["summary"]["total"]:
+            discovery = discovery_scope(db, user, check_id, floor)
+        if not result["summary"]["total"] and not discovery:
             raise HTTPException(404, "Verificação não encontrada.")
-        return {**dict(check), **result}
+        return {**dict(check), **result, 'discovery': discovery}
 
     @app.get("/api/history")
     def history(floor: int | None = None, user=Depends(current_user)):
@@ -318,7 +341,9 @@ def register_checks(app, cfg, current_user, collector):
     def pending_checks(cid=Depends(collector)):
         with connect(cfg.database_path) as db:
             pending = db.execute(
-                "SELECT 1 FROM check_results r JOIN checks c ON c.id=r.check_id JOIN labs l ON l.id=r.lab_id WHERE c.state='queued' AND r.checked_at IS NULL AND l.collector_id=? LIMIT 1",
-                (cid,),
+                """SELECT 1 FROM checks c WHERE c.state='queued' AND (
+                EXISTS(SELECT 1 FROM check_results r JOIN labs l ON l.id=r.lab_id WHERE r.check_id=c.id AND r.checked_at IS NULL AND l.collector_id=?)
+                OR EXISTS(SELECT 1 FROM check_discovery d JOIN labs l ON l.id=d.lab_id WHERE d.check_id=c.id AND d.state='queued' AND l.collector_id=?)) LIMIT 1""",
+                (cid, cid),
             ).fetchone()
         return {"pending": bool(pending)}

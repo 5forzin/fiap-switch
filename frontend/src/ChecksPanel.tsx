@@ -40,6 +40,12 @@ type Page = {
   page: number;
   state?: string;
   message?: string;
+  discovery?: {
+    lab_id: string;
+    state: string;
+    added: number;
+    message: string;
+  }[];
 };
 const when = (value?: number | null) =>
   value
@@ -269,6 +275,17 @@ export function ChecksPanel({
             )}
           </div>
           {result.message && <div className="issue-note">{result.message}</div>}
+          {!!result.discovery?.length && (
+            <p className="discovery-status" role="status">
+              {result.discovery.some((d) => d.state === "queued")
+                ? "Descobrindo computadores nas salas com quantidade indefinida…"
+                : `${quantidade(
+                    result.discovery.reduce((total, d) => total + d.added, 0),
+                    "novo computador cadastrado",
+                    "novos computadores cadastrados",
+                  )} pelo scan.`}
+            </p>
+          )}
           <div className="table-wrap">
             <table>
               <thead>

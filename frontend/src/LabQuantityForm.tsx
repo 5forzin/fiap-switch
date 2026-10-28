@@ -3,8 +3,9 @@ import { quantidade } from "./inventory";
 
 export function QuantityFields({ value = 30 }: { value?: number | null }) {
   const [indefinido, setIndefinido] = useState(value === null);
+  const [students, setStudents] = useState(String(value ?? 30));
   return (
-    <>
+    <div className="quantity-fields">
       <label>
         Computadores de alunos
         <input
@@ -12,7 +13,9 @@ export function QuantityFields({ value = 30 }: { value?: number | null }) {
           type="number"
           min={0}
           max={99}
-          defaultValue={value ?? 30}
+          value={indefinido ? "" : students}
+          placeholder={indefinido ? "Indefinido" : undefined}
+          onChange={(e) => setStudents(e.target.value)}
           disabled={indefinido}
           required={!indefinido}
         />
@@ -26,7 +29,7 @@ export function QuantityFields({ value = 30 }: { value?: number | null }) {
         />
         Indefinido
       </label>
-    </>
+    </div>
   );
 }
 
@@ -64,7 +67,7 @@ export function LabQuantityForm({
           "computador cadastrado",
           "computadores cadastrados",
         )}
-        . A opção Indefinido preserva o inventário atual.
+        . O scan descobre novos computadores quando a quantidade é indefinida.
       </small>
       <div className="modal-actions">
         <button className="primary" disabled={busy}>

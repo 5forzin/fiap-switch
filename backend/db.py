@@ -99,6 +99,11 @@ def initialize(settings):
                 issue TEXT NOT NULL DEFAULT '', PRIMARY KEY(day,computer_id)
             );
             CREATE INDEX IF NOT EXISTS checks_created ON checks(created);
+            CREATE TABLE IF NOT EXISTS check_discovery (
+                check_id TEXT NOT NULL REFERENCES checks(id), lab_id TEXT NOT NULL REFERENCES labs(id),
+                state TEXT NOT NULL DEFAULT 'queued', added INTEGER NOT NULL DEFAULT 0,
+                finished REAL, message TEXT NOT NULL DEFAULT '', PRIMARY KEY(check_id,lab_id)
+            );
             CREATE INDEX IF NOT EXISTS check_results_pending ON check_results(computer_id,checked_at);
             CREATE INDEX IF NOT EXISTS daily_status_day ON daily_status(day,floor);
             CREATE INDEX IF NOT EXISTS daily_status_computer ON daily_status(computer_id,last_online);
@@ -162,6 +167,10 @@ def initialize(settings):
         if mode and mode['value'] != settings.app_mode:
             raise ValueError('Demonstração e produção exigem bancos de dados separados.')
         db.execute("INSERT OR IGNORE INTO metadata VALUES ('mode',?)", (settings.app_mode,))
+        previous_power = db.execute("SELECT value FROM metadata WHERE key='power_mode'").fetchone()
+        if (previous_power['value'] if previous_power else 'fiap') != settings.power_mode:
+            db.execute("UPDATE jobs SET state='failed',finished=?,message='O modo de operação mudou. Confira o equipamento e envie um novo comando.' WHERE state='queued'", (time.time(),))
+        db.execute("INSERT INTO metadata(key,value) VALUES ('power_mode',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (settings.power_mode,))
         db.execute('INSERT OR IGNORE INTO collectors(id) VALUES (?)', (settings.collector_id,))
         legacy = db.execute("SELECT * FROM users WHERE id='temporary-admin'").fetchone()
         legacy_hash = db.execute("SELECT value FROM metadata WHERE key='temporary_password_hash'").fetchone()

@@ -1367,6 +1367,24 @@ td small {
   color: var(--pink);
   border-bottom: 2px solid var(--pink);
 }
+.modal-body > .history-tabs {
+  margin-bottom: 24px;
+}
+.quantity-fields {
+  display: grid;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+.discovery-status {
+  margin: 16px 0;
+  color: #666;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.modal-body .quantity-fields > label,
+.modal-body .quantity-fields > .checkbox-label {
+  margin: 0;
+}
 .history-filters {
   gap: 18px;
 }

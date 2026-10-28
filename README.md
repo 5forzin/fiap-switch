@@ -16,7 +16,7 @@
 
 O FIAP Switch centraliza o trabalho dos monitores: consultar os computadores do andar, conferir o hardware e enviar comandos de energia. O suporte acompanha todo o prédio; o administrador gerencia as contas e define o andar de cada monitor.
 
-O controlador roda no servidor Windows ou Linux que já tem acesso aos computadores pelos switches da FIAP. Os computadores usam o próprio WinRM do Windows, sem instalação de um agente da aplicação.
+O controlador roda em Windows ou Linux, com acesso à rede dos computadores. Na FIAP, energia usa WinRM e Wake-on-LAN. Nos modos AWS e Azure, energia usa as APIs do provedor. Estado e hardware continuam usando o WinRM nativo do Windows, sem agente nos computadores.
 
 ## O painel
 
@@ -45,7 +45,9 @@ Para configurar uma sala, abra **Inventário → andar → Configurar sala**. Na
 
 ![Clonagem a partir de um computador conforme da própria sala](docs/imagens/clonagem.jpg)
 
-Na aba **Computadores**, a quantidade pode ficar **Indefinida**. Definir o total depois preserva os equipamentos cadastrados e adiciona os que faltam. O professor continua identificado por `.100`.
+Na aba **Computadores**, a quantidade pode ficar **Indefinida**. Ao verificar o andar, o controlador procura novos computadores de `.1` a `.99` e o professor em `.100`, somente na sub-rede da sala. Cadastra apenas alvos que respondem ao WinRM autenticado, já com hardware e histórico. Repetir o scan preserva o inventário e não duplica IPs ou números de computador. Máquinas desligadas que nunca foram cadastradas serão descobertas quando estiverem acessíveis.
+
+Definir o total depois preserva os equipamentos cadastrados e adiciona os que faltam. A verificação aguarda o término da descoberta antes de salvar o resultado completo.
 
 <details>
 <summary>Ver quantidade indefinida e inventário detectado</summary>
@@ -93,6 +95,7 @@ flowchart LR
     W --> D[(Inventário e histórico)]
     C -->|WinRM: consultar, reiniciar e desligar| S[Switches da rede local]
     C -->|Wake-on-LAN: ligar| S
+    C -->|Modos AWS e Azure: API de energia| N[Provedor de nuvem]
     S --> P[Computadores dos laboratórios]
 ```
 
@@ -103,6 +106,8 @@ O site pode ficar hospedado fora do campus. O controlador faz conexões de saíd
 | Consultar estado e hardware | WinRM com consultas CIM do Windows.                    |
 | Reiniciar ou desligar       | WinRM com aviso de 60 segundos para salvar o trabalho. |
 | Ligar                       | Pacote Wake-on-LAN para o MAC cadastrado.              |
+
+Essa tabela descreve o modo **FIAP produção**. Em **AWS**, ligar, desligar e reiniciar usam `StartInstances`, `StopInstances` e `RebootInstances`. Em **Azure**, usam `start`, `deallocate` e `restart`. Não há fallback de uma API de nuvem para Wake-on-LAN ou comandos WinRM de energia. O controlador encontra a VM pelo IP privado dentro da VPC ou do grupo de recursos configurado; correspondências ambíguas são recusadas.
 
 **Wake-on-LAN depende da rede e do equipamento.** BIOS/UEFI e placa de rede precisam permitir o ligamento remoto. Entre VLANs, pode ser necessário encaminhar broadcast ou usar um retransmissor autorizado. Acesso por IP atende ao WinRM, mas não garante a passagem do pacote de Wake-on-LAN.
 
@@ -125,6 +130,37 @@ O terceiro octeto junta o número do andar com o número da sala dentro daquele 
 Um comando enviado não comprova que a máquina já mudou de estado. A confirmação vem da próxima leitura. Hardware sem leitura atual aparece como não verificado, preservando o último inventário e as divergências abertas.
 
 ## Executar localmente
+
+### Instalação automática em Linux ou Windows
+
+Requisitos: **Python 3.12+ e Docker com Compose**. O instalador prepara o ambiente, constrói a interface, inicia o site e mostra no terminal o e-mail e a senha aleatória do administrador inicial. Sem `--mode`, apresenta a escolha entre FIAP produção, AWS e Azure.
+
+Linux:
+
+```sh
+sh setup.sh --mode fiap
+```
+
+Windows:
+
+```powershell
+.\setup.ps1 --mode fiap
+```
+
+Abra [localhost:8000](http://localhost:8000). Para um domínio com HTTPS configurado no proxy reverso, acrescente `--url https://switch.exemplo.com`. Configurações e contas existentes são preservadas em execuções posteriores. Guarde a senha exibida; o arquivo de configuração armazena somente seu hash.
+
+Para escolher nuvem sem perguntas adicionais:
+
+```sh
+sh setup.sh --mode aws --aws-region us-east-2 --aws-vpc-id vpc-0123456789abcdef0
+sh setup.sh --mode azure --azure-subscription-id SEU_UUID --azure-resource-group fiap-labs
+```
+
+Os exemplos representam instalações alternativas. Credenciais de nuvem ficam no **controlador**, usando perfil IAM, identidade gerenciada ou login de desenvolvimento pelo SDK. Nenhuma chave de nuvem é enviada ao navegador ou gravada pelo instalador. O site pode estar em Linux independentemente do modo escolhido.
+
+O instalador também gera `.env.collector` com a URL e o token corretos. Transfira esse arquivo de forma privada ao servidor da LAN, preencha a conta WinRM e a autoridade certificadora e execute o controlador. Use `--no-start` para gerar os arquivos e iniciar a aplicação manualmente.
+
+### Instalação manual
 
 Requisitos: **Python 3.12+**, **Node.js 24** e **npm**. No PowerShell:
 
@@ -185,7 +221,7 @@ Arquivos de ambiente, chaves, bancos e credenciais ficam fora do Git. Nunca publ
 npm run build --prefix frontend
 ```
 
-A suíte possui **60 testes automatizados**. A validação de **27/10/2026** utilizou um controlador Windows Server 2022 e dois alvos Windows reais, em redes de laboratório diferentes. Foram confirmados telemetria, restrição por andar, reinicialização com mudança do horário de inicialização, desligamento efetivo, expiração da fila, persistência, histórico diário e divergências de hardware. A interface também foi exercitada com **1.188 computadores em uma base isolada**.
+A suíte possui **81 testes automatizados**. A validação de **27/10/2026** utilizou um controlador Windows Server 2022 e dois alvos Windows reais, em redes de laboratório diferentes. Foram confirmados telemetria, restrição por andar, reinicialização com mudança do horário de inicialização, desligamento efetivo, expiração da fila, persistência, histórico diário e divergências de hardware. A interface também foi exercitada com **1.188 computadores em uma base isolada**.
 
 Os três pacotes reais de Wake-on-LAN foram recebidos no controlador e comparados com o MAC do alvo. **A AWS não oferece broadcast em VPC nem ligamento de EC2 desligada por Wake-on-LAN**; o teste de ligar fisicamente depende da LAN do campus. [Limitação documentada pela AWS](https://docs.aws.amazon.com/vpc/latest/userguide/subnet-sizing.html).
 
